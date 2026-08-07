@@ -1,0 +1,19 @@
+# Rust / Tauri build output
+/src-tauri/target
+/src-tauri/gen/schemas
+
+# Node
+node_modules
+
+# Local audit reports (kept out of the public repo)
+audits/
+
+# OS / editor
+.DS_Store
+*.log
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# NOTE: dist/ is the actual frontend source (frontendDist), NOT a build output —
+# it is intentionally committed.
