@@ -1,7 +1,7 @@
 {
   "name": "clipcork",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "license": "MIT",
   "description": "ClipCork — a menu-bar clipboard manager for macOS",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-updater": "^2"
   },
   "devDependencies": {

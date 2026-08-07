@@ -406,6 +406,64 @@ async function pinItem(id) {
     toast('Pinned as snippet');
 }
 
+// ---- Auto-update (mirrors beecork-terminal's UpdateBanner) -----------------
+// The no-bundler frontend drives the updater/process plugins through the
+// guaranteed-global core.invoke + Channel, rather than the npm ESM wrappers.
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+let pendingUpdate = null;   // { rid, version, ... } from plugin:updater|check
+let dismissedVersion = null;
+let updateBusy = false;
+
+async function checkForUpdate() {
+    if (!window.__TAURI__) return;
+    if (updateBusy) return;
+    try {
+        // Returns null when up to date, else update metadata (with a `rid`).
+        const meta = await window.__TAURI__.core.invoke('plugin:updater|check', {});
+        if (updateBusy) return;
+        if (meta && meta.version && meta.version !== dismissedVersion) {
+            pendingUpdate = meta;
+            $('updateText').textContent = 'ClipCork ' + meta.version + ' is available.';
+            $('updateInstall').textContent = 'Update & Restart';
+            $('updateInstall').disabled = false;
+            $('updateBanner').classList.remove('hidden');
+        }
+    } catch (e) {
+        // Offline, no release yet, or endpoint unreachable — stay quiet.
+        console.error('update check failed', e);
+    }
+}
+
+async function installUpdate() {
+    if (!pendingUpdate || updateBusy) return;
+    updateBusy = true;
+    const btn = $('updateInstall');
+    btn.disabled = true;
+    btn.textContent = 'Installing…';
+    try {
+        const core = window.__TAURI__.core;
+        const onEvent = new core.Channel();
+        await core.invoke('plugin:updater|download_and_install', {
+            onEvent,
+            rid: pendingUpdate.rid,
+        });
+        await core.invoke('plugin:process|restart');
+    } catch (e) {
+        console.error('update install failed', e);
+        $('updateText').textContent = 'Update failed.';
+        btn.textContent = 'Retry';
+        btn.disabled = false;
+        updateBusy = false;
+    }
+}
+
+$('updateInstall').onclick = installUpdate;
+$('updateDismiss').onclick = () => {
+    dismissedVersion = pendingUpdate ? pendingUpdate.version : null;
+    pendingUpdate = null;
+    $('updateBanner').classList.add('hidden');
+};
+
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
         if (window.__TAURI__) {
@@ -452,5 +510,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (e) {
             console.error('clipboard-update listener failed to register', e);
         }
+
+        // Check for updates on launch, then periodically while the panel lives.
+        checkForUpdate();
+        setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
     }
 });

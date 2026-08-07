@@ -712,6 +712,7 @@ fn toggle_panel(window: &tauri::WebviewWindow, rect: tauri::Rect) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState {
             clipboard_history: Mutex::new(Vec::new()),
             last_clipboard: Mutex::new(String::new()),

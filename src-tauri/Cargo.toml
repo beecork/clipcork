@@ -1,6 +1,6 @@
 [package]
 name = "clipcork"
-version = "0.1.0"
+version = "0.1.1"
 description = "ClipCork — a menu-bar clipboard manager for macOS"
 authors = ["Beecork"]
 license = "MIT"
@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication", "NSWindow", "NSResponder", "NSPanel", "NSPasteboard"] }
 serde = { version = "1", features = ["derive"] }

@@ -1,0 +1,42 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="tile" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#f4a883"/>
+      <stop offset="0.55" stop-color="#e8795a"/>
+      <stop offset="1" stop-color="#d15738"/>
+    </linearGradient>
+    <linearGradient id="board" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fdf5e9"/>
+      <stop offset="1" stop-color="#f3e3ca"/>
+    </linearGradient>
+    <linearGradient id="clip" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a06a44"/>
+      <stop offset="1" stop-color="#7d5233"/>
+    </linearGradient>
+  </defs>
+
+  <!-- app tile (squircle) -->
+  <rect x="72" y="72" width="880" height="880" rx="216" fill="url(#tile)"/>
+  <!-- soft top highlight -->
+  <rect x="72" y="72" width="880" height="440" rx="216" fill="#ffffff" opacity="0.06"/>
+
+  <!-- drop shadow under the board -->
+  <rect x="286" y="270" width="452" height="556" rx="60" fill="#000000" opacity="0.16"/>
+  <!-- clipboard board -->
+  <rect x="286" y="256" width="452" height="556" rx="58" fill="url(#board)"/>
+
+  <!-- cork speckles (subtle texture) -->
+  <circle cx="360" cy="726" r="7" fill="#d9b98c" opacity="0.55"/>
+  <circle cx="662" cy="706" r="6" fill="#d9b98c" opacity="0.5"/>
+  <circle cx="628" cy="756" r="4.5" fill="#d9b98c" opacity="0.45"/>
+
+  <!-- content lines -->
+  <rect x="360" y="470" width="304" height="32" rx="16" fill="#e8795a" opacity="0.9"/>
+  <rect x="360" y="546" width="304" height="30" rx="15" fill="#e6cba3"/>
+  <rect x="360" y="620" width="212" height="30" rx="15" fill="#e6cba3"/>
+
+  <!-- clip -->
+  <rect x="420" y="212" width="184" height="112" rx="34" fill="url(#clip)"/>
+  <rect x="458" y="180" width="108" height="84" rx="28" fill="#b07a52"/>
+  <rect x="482" y="204" width="60" height="30" rx="15" fill="#6a4529" opacity="0.55"/>
+</svg>
