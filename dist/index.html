@@ -92,9 +92,25 @@
                     <span class="set-value"><span class="kbd">⌘⇧V</span> to open</span>
                 </div>
                 <div class="set-block">
+                    <span class="set-label">Snippets folder</span>
+                    <div class="set-path" id="snippetsDir">Local (default)</div>
+                    <p class="set-note">Point this at an iCloud Drive or Dropbox folder to sync your snippets across Macs. Clipboard history always stays on this Mac.</p>
+                    <div class="btn-row">
+                        <button class="mini-btn" id="chooseFolder">Choose folder…</button>
+                        <button class="mini-btn" id="resetFolder">Use default</button>
+                    </div>
+                </div>
+                <div class="set-block">
+                    <span class="set-label">Backup</span>
+                    <div class="btn-row">
+                        <button class="mini-btn" id="exportBtn">Export snippets…</button>
+                        <button class="mini-btn" id="importBtn">Import snippets…</button>
+                    </div>
+                </div>
+                <div class="set-block">
                     <span class="set-label">Data folder</span>
                     <div class="set-path" id="dataPath">Loading…</div>
-                    <p class="set-note">Snippets and clipboard history are stored here as plaintext JSON, owner-only.</p>
+                    <p class="set-note">Stored as plaintext JSON, owner-only.</p>
                 </div>
                 <button class="danger-btn" id="clearHistory">Clear clipboard history</button>
                 <button class="quit-btn" id="quitApp">Quit ClipCork</button>

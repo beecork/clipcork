@@ -68,11 +68,13 @@ async function copyRaw(text) { if (window.__TAURI__) return !!(await invoke('wri
 
 async function copyItem(it) {
     await copyRaw(scope === 'snippets' ? it.content : it.text);
+    bumpUse(it);
     toast('Copied');
     hidePanel();
 }
 async function pasteItem(it) {
     const text = scope === 'snippets' ? it.content : it.text;
+    bumpUse(it);
     if (window.__TAURI__) {
         const ok = await invoke('paste_and_hide', { text });
         if (ok === false) toast('Enable Accessibility to paste');
@@ -96,6 +98,14 @@ const IC_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const IC_DEL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
 const IC_PIN = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 7.7l5.4-.8z"/></svg>';
 const IC_BOOKMARK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
+const IC_OPEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>';
+const IC_REVEAL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>';
+
+function isUrl(t) { return /^https?:\/\//i.test((t || '').trim()); }
+function isPath(t) { t = (t || '').trim(); return /^(\/|~\/|[A-Za-z]:\\)/.test(t) && !t.includes('\n'); }
+function snippetSort(a, b) { return (b.uses || 0) - (a.uses || 0) || (b.updated || 0) - (a.updated || 0); }
+function isSnippetItem(it) { return it && it.content !== undefined; }
+async function bumpUse(it) { if (isSnippetItem(it)) { it.uses = (it.uses || 0) + 1; it.last_used = Date.now(); await saveSnippets(); } }
 
 function actBtn(action, icon, title, cls) {
     return '<button class="act-btn ' + (cls || '') + '" data-action="' + action + '" title="' + title + '">' + icon + '</button>';
@@ -128,10 +138,12 @@ function rowHTML(it, i, isSnip) {
             '<div class="row-meta"><span>' + ago(it.timestamp) + '</span><span>·</span><span>' + fmtSize(it.text.length) + '</span>' + (it.pinned ? '<span>·</span><span>pinned</span>' : '') + '</div>' +
         '</div>' +
         rightSlot([
+            (isUrl(it.text) ? actBtn('open', IC_OPEN, 'Open in browser') :
+                isPath(it.text) ? actBtn('reveal', IC_REVEAL, 'Reveal in Finder') : ''),
             actBtn('pin', IC_PIN, it.pinned ? 'Unpin' : 'Pin', it.pinned ? 'on' : ''),
             actBtn('snippet', IC_BOOKMARK, 'Save as snippet'),
             actBtn('copy', IC_COPY, 'Copy'),
-        ]) +
+        ].filter(Boolean)) +
     '</div>';
 }
 
@@ -145,7 +157,7 @@ function computeFiltered() {
     $('countHistory').textContent = hCount || '';
     $('countSnippets').textContent = sCount || '';
     filtered = scope === 'snippets'
-        ? snippets.filter(s => matchesSnippet(s, q))
+        ? snippets.filter(s => matchesSnippet(s, q)).sort(snippetSort)   // most-used first
         : history.filter(h => matchesHistory(h, q));
     if (selectedIndex >= filtered.length) selectedIndex = Math.max(0, filtered.length - 1);
 }
@@ -244,6 +256,8 @@ $('list').addEventListener('click', e => {
         if (a === 'copy') copyItem(it);
         else if (a === 'pin') togglePinItem(it);
         else if (a === 'snippet') saveAsSnippet(it);
+        else if (a === 'open') invoke('open_url', { url: it.text });
+        else if (a === 'reveal') invoke('reveal_path', { path: it.text });
     }
 });
 $('list').addEventListener('mousemove', e => {
@@ -306,7 +320,7 @@ async function saveSnippet() {
         if (s) { s.title = title; s.content = content; s.tag = tag; s.updated = now; }
         toast('Updated');
     } else {
-        snippets.unshift({ id: now.toString(36) + Math.random().toString(36).slice(2, 6), title, content, tag, created: now, updated: now });
+        snippets.unshift({ id: now.toString(36) + Math.random().toString(36).slice(2, 6), title, content, tag, created: now, updated: now, uses: 0, last_used: 0 });
         toast('Saved');
     }
     await saveSnippets();
@@ -328,7 +342,51 @@ function updateSettingsUI() {
     $('recordSwitch').setAttribute('aria-checked', settings.enabled !== false ? 'true' : 'false');
     document.querySelectorAll('#limitOptions .seg-opt').forEach(o => o.classList.toggle('active', parseInt(o.dataset.limit, 10) === settings.history_limit));
 }
-function openSettings() { $('settingsSheet').classList.remove('hidden'); updateSettingsUI(); }
+function updateFolderUI() {
+    $('snippetsDir').textContent = settings.snippets_dir || 'Local (default)';
+}
+function openSettings() { $('settingsSheet').classList.remove('hidden'); updateSettingsUI(); updateFolderUI(); }
+
+$('chooseFolder').onclick = async () => {
+    if (!window.__TAURI__) return;
+    const dir = await window.__TAURI__.dialog.open({ directory: true, title: 'Choose a folder to sync snippets' });
+    if (!dir) return;
+    snippets = (await invoke('set_snippets_dir', { dir })) || [];
+    settings.snippets_dir = dir;
+    updateFolderUI(); render();
+    toast('Snippets folder set');
+};
+$('resetFolder').onclick = async () => {
+    if (!window.__TAURI__ || !settings.snippets_dir) return;
+    snippets = (await invoke('set_snippets_dir', { dir: null })) || [];
+    settings.snippets_dir = null;
+    updateFolderUI(); render();
+    toast('Using default folder');
+};
+$('exportBtn').onclick = async () => {
+    if (!window.__TAURI__) return;
+    const path = await window.__TAURI__.dialog.save({ defaultPath: 'clipcork-snippets.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+    if (!path) return;
+    const ok = await invoke('export_snippets_to', { path });
+    toast(ok ? 'Snippets exported' : 'Export failed');
+};
+$('importBtn').onclick = async () => {
+    if (!window.__TAURI__) return;
+    const path = await window.__TAURI__.dialog.open({ filters: [{ name: 'JSON', extensions: ['json'] }], title: 'Import snippets' });
+    if (!path) return;
+    const imported = (await invoke('import_snippets_from', { path })) || [];
+    const seen = new Set(snippets.map(s => s.content));
+    let added = 0;
+    for (const s of imported) {
+        if (s && s.content && !seen.has(s.content)) {
+            s.id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+            snippets.push(s); seen.add(s.content); added++;
+        }
+    }
+    if (added) await saveSnippets();
+    render();
+    toast(added ? `Imported ${added} snippet${added > 1 ? 's' : ''}` : 'Nothing new to import');
+};
 function closeSettings() { $('settingsSheet').classList.add('hidden'); resetClearBtn(); }
 $('settingsDone').onclick = closeSettings;
 

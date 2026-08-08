@@ -59,6 +59,12 @@ struct Snippet {
     tag: String,
     created: u64,
     updated: u64,
+    // Usage tracking for "most-used floats up" ordering (managed by the frontend;
+    // declared here so Rust-side load/save round-trips don't drop them).
+    #[serde(default)]
+    uses: u64,
+    #[serde(default)]
+    last_used: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -87,6 +93,8 @@ struct AppState {
     // The tray icon's screen rect from its most recent event, so the panel can
     // be anchored under it even when opened from the right-click menu.
     last_tray_rect: Mutex<Option<tauri::Rect>>,
+    // Custom snippets folder (for cloud-folder sync), synced from settings.
+    snippets_dir: Mutex<Option<PathBuf>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +127,13 @@ fn app_file(app: &tauri::AppHandle, name: &str) -> PathBuf {
 }
 
 fn data_path(app: &tauri::AppHandle) -> PathBuf {
+    // Snippets may live in a user-chosen cloud folder; fall back to app-data.
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Some(dir) = state.snippets_dir.lock().unwrap().clone() {
+            let _ = fs::create_dir_all(&dir);
+            return dir.join("snippets.json");
+        }
+    }
     app_file(app, "snippets.json")
 }
 
@@ -181,6 +196,11 @@ struct Settings {
     // rather than silently resetting every field to Default.
     #[serde(default = "default_enabled")]
     enabled: bool,
+    // Optional folder (e.g. inside iCloud Drive / Dropbox) to store snippets.json
+    // in, so a personal snippet library syncs across Macs. History and settings
+    // always stay in the local app-data dir.
+    #[serde(default)]
+    snippets_dir: Option<String>,
 }
 
 fn default_limit() -> usize {
@@ -196,6 +216,7 @@ impl Default for Settings {
         Self {
             history_limit: default_limit(),
             enabled: default_enabled(),
+            snippets_dir: None,
         }
     }
 }
@@ -267,6 +288,8 @@ fn save_settings_cmd(app: tauri::AppHandle, settings: Settings) {
     if let Some(state) = app.try_state::<AppState>() {
         *state.history_limit.lock().unwrap() = settings.history_limit;
         *state.recording_enabled.lock().unwrap() = settings.enabled;
+        *state.snippets_dir.lock().unwrap() =
+            settings.snippets_dir.as_ref().map(PathBuf::from);
     }
 }
 
@@ -311,11 +334,73 @@ fn pin_to_snippets(app: tauri::AppHandle, content: String) -> Snippet {
         tag: String::new(),
         created: now,
         updated: now,
+        uses: 0,
+        last_used: 0,
     };
 
     snippets.insert(0, snippet.clone());
     save_snippets(app, snippets);
     snippet
+}
+
+#[tauri::command]
+fn open_url(url: String) {
+    // Only http(s) — never hand an arbitrary scheme or file path from clipboard
+    // content to `open`.
+    if url.starts_with("http://") || url.starts_with("https://") {
+        let _ = std::process::Command::new("open").arg(&url).spawn();
+    }
+}
+
+#[tauri::command]
+fn reveal_path(path: String) {
+    let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+}
+
+// Point the snippet store at a folder (e.g. iCloud Drive) or back to local
+// (None). Returns the effective snippet list: an existing file in the target
+// wins (adopting already-synced snippets); otherwise the current set seeds it.
+#[tauri::command]
+fn set_snippets_dir(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    dir: Option<String>,
+) -> Vec<Snippet> {
+    let current = load_snippets(app.clone());
+    let mut settings = load_settings(&app);
+    settings.snippets_dir = dir.clone();
+    let _ = write_json_atomic(&settings_path(&app), &settings);
+    *state.snippets_dir.lock().unwrap() = dir.as_ref().map(PathBuf::from);
+
+    let new_path = data_path(&app);
+    if new_path.exists() {
+        read_json(&new_path)
+    } else {
+        let _ = write_json_atomic(&new_path, &current);
+        current
+    }
+}
+
+#[tauri::command]
+fn get_snippets_dir(app: tauri::AppHandle) -> Option<String> {
+    load_settings(&app).snippets_dir
+}
+
+#[tauri::command]
+fn export_snippets_to(app: tauri::AppHandle, path: String) -> bool {
+    let snippets = load_snippets(app.clone());
+    match serde_json::to_string_pretty(&snippets) {
+        Ok(json) => fs::write(&path, json).is_ok(),
+        Err(_) => false,
+    }
+}
+
+#[tauri::command]
+fn import_snippets_from(path: String) -> Vec<Snippet> {
+    match fs::read_to_string(&path) {
+        Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
 }
 
 #[tauri::command(async)]
@@ -823,6 +908,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcut("Cmd+Shift+V")
@@ -842,6 +928,7 @@ pub fn run() {
             skip_text: Mutex::new(None),
             last_hidden_at: Mutex::new(0),
             last_tray_rect: Mutex::new(None),
+            snippets_dir: Mutex::new(None),
         })
         .on_window_event(|window, event| {
             // Clicking away should dismiss the panel, the way every other menu
@@ -864,6 +951,8 @@ pub fn run() {
                 let state = app_handle.state::<AppState>();
                 *state.history_limit.lock().unwrap() = settings.history_limit;
                 *state.recording_enabled.lock().unwrap() = settings.enabled;
+                *state.snippets_dir.lock().unwrap() =
+                    settings.snippets_dir.as_ref().map(PathBuf::from);
                 *state.clipboard_history.lock().unwrap() =
                     load_clipboard_history(app_handle.clone());
             }
@@ -977,6 +1066,12 @@ pub fn run() {
             clear_clipboard_history,
             toggle_pin,
             pin_to_snippets,
+            open_url,
+            reveal_path,
+            set_snippets_dir,
+            get_snippets_dir,
+            export_snippets_to,
+            import_snippets_from,
             paste_and_hide,
         ])
         .run(tauri::generate_context!())
