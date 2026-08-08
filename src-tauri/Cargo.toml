@@ -1,6 +1,6 @@
 [package]
 name = "clipcork"
-version = "0.1.1"
+version = "0.1.2"
 description = "ClipCork — a menu-bar clipboard manager for macOS"
 authors = ["Beecork"]
 license = "MIT"

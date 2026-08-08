@@ -243,12 +243,11 @@ function switchTab(tab) {
     const targetId = 'tab' + tab.charAt(0).toUpperCase() + tab.slice(1);
     document.querySelectorAll('.tab-content').forEach(tc => tc.classList.toggle('active', tc.id === targetId));
 
-    if (tab === 'history') {
-        loadHistory().then(renderHistory);
-    }
-    if (tab === 'snippets') {
-        loadData().then(render);
-    }
+    // Render from in-memory state — snippets change only through this panel and
+    // history is kept live by the clipboard-update event, so a disk reload on
+    // every tab switch is both unnecessary and the cause of a visible re-render.
+    if (tab === 'history') renderHistory();
+    if (tab === 'snippets') render();
 }
 
 function updateSettingsUI() {
@@ -487,15 +486,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             getCurrentWindow().hide();
         });
 
-        const win = getCurrentWindow();
-        win.onFocusChanged(async ({ payload: focused }) => {
-            if (focused) {
-                await loadHistory();
-                await loadData();
-                if (currentTab === 'history') renderHistory();
-                render();
-            }
-        });
+        // The panel is preloaded hidden at launch, so its content is already
+        // rendered before the first show — no reload-on-focus (that reload was
+        // what made the first open flicker). History stays current via the
+        // clipboard-update event; snippets only change through this panel.
+
+        // Opened from the tray's right-click "Settings" item.
+        try {
+            const { listen } = window.__TAURI__.event;
+            await listen('open-settings', () => switchTab('settings'));
+        } catch (e) { console.error('open-settings listener failed', e); }
 
         try {
             const dataPath = await invoke('get_data_path');

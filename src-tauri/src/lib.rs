@@ -62,6 +62,9 @@ struct AppState {
     // happened to land in the same tick.
     skip_text: Mutex<Option<String>>,
     last_hidden_at: Mutex<u64>,
+    // The tray icon's screen rect from its most recent event, so the panel can
+    // be anchored under it even when opened from the right-click menu.
+    last_tray_rect: Mutex<Option<tauri::Rect>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -708,6 +711,18 @@ fn toggle_panel(window: &tauri::WebviewWindow, rect: tauri::Rect) {
     show_panel(window);
 }
 
+// Opens the panel to the Settings tab from the tray menu, anchored under the
+// icon if we've seen its position.
+fn open_settings(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if let Some(rect) = app.state::<AppState>().last_tray_rect.lock().unwrap().clone() {
+            position_under_tray(&window, rect);
+        }
+        show_panel(&window);
+        let _ = app.emit("open-settings", ());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -720,6 +735,7 @@ pub fn run() {
             recording_enabled: Mutex::new(default_enabled()),
             skip_text: Mutex::new(None),
             last_hidden_at: Mutex::new(0),
+            last_tray_rect: Mutex::new(None),
         })
         .on_window_event(|window, event| {
             // Clicking away should dismiss the panel, the way every other menu
@@ -750,6 +766,7 @@ pub fn run() {
             {
                 use objc2::MainThreadMarker;
                 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+                use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
                 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
                 let mtm = MainThreadMarker::new().expect("not on main thread");
@@ -759,13 +776,48 @@ pub fn run() {
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))
                     .expect("failed to load tray icon");
 
+                // Right-click menu: the only way to reach Settings without the
+                // panel, and the only way to quit (an Accessory app has no Dock
+                // icon or app menu).
+                let settings_item =
+                    MenuItem::with_id(&app_handle, "settings", "Settings", true, None::<&str>)?;
+                let quit_item = MenuItem::with_id(
+                    &app_handle,
+                    "quit",
+                    "Quit ClipCork",
+                    true,
+                    Some("Cmd+Q"),
+                )?;
+                let sep = PredefinedMenuItem::separator(&app_handle)?;
+                let menu = Menu::with_items(&app_handle, &[&settings_item, &sep, &quit_item])?;
+
                 let _tray = TrayIconBuilder::new()
                     .icon(icon)
-                    // The tray glyph is a monochrome template so macOS tints it
-                    // to match the light/dark menu bar.
-                    .icon_as_template(true)
                     .tooltip("ClipCork")
+                    .menu(&menu)
+                    // Left-click toggles the panel; the menu is right-click only.
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "quit" => app.exit(0),
+                        "settings" => open_settings(app),
+                        _ => {}
+                    })
                     .on_tray_icon_event(move |tray, event| {
+                        // Remember the icon's position for menu-triggered opens
+                        // (hovering to right-click keeps this fresh).
+                        let rect = match &event {
+                            TrayIconEvent::Click { rect, .. }
+                            | TrayIconEvent::DoubleClick { rect, .. }
+                            | TrayIconEvent::Enter { rect, .. }
+                            | TrayIconEvent::Move { rect, .. }
+                            | TrayIconEvent::Leave { rect, .. } => Some(rect.clone()),
+                            _ => None,
+                        };
+                        if let Some(rect) = rect {
+                            if let Some(state) = tray.app_handle().try_state::<AppState>() {
+                                *state.last_tray_rect.lock().unwrap() = Some(rect);
+                            }
+                        }
                         if let TrayIconEvent::Click {
                             button: MouseButton::Left,
                             button_state: MouseButtonState::Up,
