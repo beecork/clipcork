@@ -338,14 +338,23 @@ $('saveBtn').onclick = saveSnippet;
 $('addCancel').onclick = closeAdd;
 
 // ---- settings sheet ----
+// Login-item state lives in a launch agent, not settings.json, so it is read
+// back from the system rather than from `settings`.
+let autostart = false;
+async function refreshAutostart() {
+    if (!window.__TAURI__) return;
+    try { autostart = !!(await invoke('get_autostart')); } catch (e) { console.error('get_autostart failed', e); }
+    $('startupSwitch').setAttribute('aria-checked', autostart ? 'true' : 'false');
+}
 function updateSettingsUI() {
     $('recordSwitch').setAttribute('aria-checked', settings.enabled !== false ? 'true' : 'false');
+    $('startupSwitch').setAttribute('aria-checked', autostart ? 'true' : 'false');
     document.querySelectorAll('#limitOptions .seg-opt').forEach(o => o.classList.toggle('active', parseInt(o.dataset.limit, 10) === settings.history_limit));
 }
 function updateFolderUI() {
     $('snippetsDir').textContent = settings.snippets_dir || 'Local (default)';
 }
-function openSettings() { $('settingsSheet').classList.remove('hidden'); updateSettingsUI(); updateFolderUI(); }
+function openSettings() { $('settingsSheet').classList.remove('hidden'); updateSettingsUI(); updateFolderUI(); refreshAutostart(); }
 
 $('chooseFolder').onclick = async () => {
     if (!window.__TAURI__) return;
@@ -394,6 +403,17 @@ $('recordSwitch').onclick = async () => {
     settings.enabled = !(settings.enabled !== false);
     updateSettingsUI(); await saveSettings();
     toast(settings.enabled ? 'Recording on' : 'Recording off');
+};
+$('startupSwitch').onclick = async () => {
+    if (!window.__TAURI__) return;
+    const want = !autostart;
+    // The command answers with the state that actually took effect, so a
+    // refused write leaves the switch where it was instead of lying.
+    try { autostart = !!(await invoke('set_autostart', { enabled: want })); } catch (e) { console.error('set_autostart failed', e); }
+    updateSettingsUI();
+    toast(autostart === want
+        ? (autostart ? 'Opens at login' : "Won't open at login")
+        : "Couldn't change login item");
 };
 $('limitOptions').addEventListener('click', async e => {
     const o = e.target.closest('.seg-opt'); if (!o) return;
@@ -491,6 +511,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         win.onCloseRequested(async (e) => { e.preventDefault(); win.hide(); });
 
         try { $('dataPath').textContent = (await invoke('get_data_path')) || ''; } catch (e) { console.error('get_data_path failed', e); }
+        refreshAutostart();
 
         const { listen } = window.__TAURI__.event;
         try { await listen('clipboard-update', ev => onClipboardUpdate(ev.payload)); } catch (e) { console.error('clipboard-update listener failed', e); }

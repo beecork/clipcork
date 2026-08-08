@@ -39,6 +39,11 @@ const SCREEN_MARGIN: f64 = 8.0;
 // before the tray handler runs. Anything hidden this recently was closed by
 // that same click and must not be reopened by it.
 const REOPEN_GUARD_MS: u64 = 250;
+// Opening over someone else's fullscreen space orders the panel in without
+// activating this app, and AppKit can report a blur before key status settles.
+// Auto-hiding on that blur makes the panel look like it never opened, so blurs
+// this soon after a show are ignored.
+const FOCUS_GUARD_MS: u64 = 250;
 
 // macOS pasteboard privacy markers. Password managers (1Password, Keychain,
 // Bitwarden, …) stamp copied secrets with ConcealedType precisely so clipboard
@@ -90,6 +95,8 @@ struct AppState {
     // happened to land in the same tick.
     skip_text: Mutex<Option<String>>,
     last_hidden_at: Mutex<u64>,
+    // Timestamp of the most recent show, for FOCUS_GUARD_MS.
+    last_shown_at: Mutex<u64>,
     // The tray icon's screen rect from its most recent event, so the panel can
     // be anchored under it even when opened from the right-click menu.
     last_tray_rect: Mutex<Option<tauri::Rect>>,
@@ -401,6 +408,29 @@ fn import_snippets_from(path: String) -> Vec<Snippet> {
         Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
         Err(_) => Vec::new(),
     }
+}
+
+// Open-at-login. The launch agent the plugin writes is the source of truth —
+// deliberately not mirrored into settings.json, which would only give the two
+// a chance to disagree after the user removes the item in System Settings.
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+// Returns the state that actually took effect, so a failed write shows up in
+// the UI as the switch springing back rather than a lie that sticks.
+#[tauri::command]
+fn set_autostart(app: tauri::AppHandle, enabled: bool) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    let _ = if enabled {
+        manager.enable()
+    } else {
+        manager.disable()
+    };
+    manager.is_enabled().unwrap_or(false)
 }
 
 #[tauri::command(async)]
@@ -762,6 +792,23 @@ mod panel {
         }
     );
 
+    // What actually lets the panel draw over someone else's fullscreen space:
+    // a level above the menu bar, plus membership in every space rather than
+    // the one it was born in. Neither is sticky — a window that has never been
+    // ordered in, or that was ordered out while a fullscreen space was being
+    // torn down and rebuilt, can come back bound to a single space and end up
+    // behind the fullscreen app. Cheap enough to re-assert before every show.
+    fn apply_float_behavior(ns_window: &NSWindow) {
+        // Above the menu bar (24) and the Dock (20), which is where real menu
+        // bar popovers live. A merely "floating" window (3) loses to fullscreen.
+        ns_window.setLevel(NSPopUpMenuWindowLevel);
+        ns_window.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary,
+        );
+    }
+
     pub fn adopt(window: &tauri::WebviewWindow) {
         let Ok(ptr) = window.ns_window() else {
             return;
@@ -774,20 +821,28 @@ mod panel {
         let ns_window: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
         ns_window
             .setStyleMask(NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel);
-        // Above the menu bar (24) and the Dock (20), which is where real menu
-        // bar popovers live. A merely "floating" window (3) loses to fullscreen.
-        ns_window.setLevel(NSPopUpMenuWindowLevel);
-        ns_window.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::Stationary,
-        );
+        apply_float_behavior(ns_window);
+        // NSPanel — unlike NSWindow — defaults hidesOnDeactivate to YES, so
+        // AppKit would order the panel out whenever this app is not the active
+        // one. For a menu bar extra opened over another app's fullscreen space,
+        // this app is never the active one.
+        ns_window.setHidesOnDeactivate(false);
         // Make the window itself clear so the NSVisualEffectView (applied after
         // adopt) is what the user sees — a transparent window with an opaque
         // background color would hide the vibrancy entirely.
         ns_window.setOpaque(false);
         let clear = NSColor::clearColor();
         ns_window.setBackgroundColor(Some(&clear));
+    }
+
+    // Re-assert the float attributes while the window is still hidden, so the
+    // show that follows lands in whatever space the user is in right now.
+    pub fn prepare(window: &tauri::WebviewWindow) {
+        let Ok(ptr) = window.ns_window() else {
+            return;
+        };
+        let ns_window: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+        apply_float_behavior(ns_window);
     }
 
     pub fn make_key(window: &tauri::WebviewWindow) {
@@ -798,6 +853,10 @@ mod panel {
         // Deliberately not tauri's set_focus(), which calls
         // activateIgnoringOtherApps and switches spaces out from under the user.
         ns_window.makeKeyAndOrderFront(None);
+        // makeKeyAndOrderFront: only orders reliably for the *active* app, and
+        // a menu bar extra never is one. Without this the panel intermittently
+        // opens behind the window the user is looking at.
+        ns_window.orderFrontRegardless();
     }
 }
 
@@ -837,6 +896,9 @@ fn position_under_tray(window: &tauri::WebviewWindow, rect: tauri::Rect) {
 }
 
 fn show_panel(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    panel::prepare(window);
+
     let _ = window.show();
 
     #[cfg(target_os = "macos")]
@@ -844,6 +906,10 @@ fn show_panel(window: &tauri::WebviewWindow) {
 
     #[cfg(not(target_os = "macos"))]
     let _ = window.set_focus();
+
+    if let Some(state) = window.app_handle().try_state::<AppState>() {
+        *state.last_shown_at.lock().unwrap() = now_millis();
+    }
 
     // Let the frontend reset its search query, selection and scroll on each open.
     let _ = window.emit("panel-shown", ());
@@ -909,6 +975,12 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
+        // LaunchAgent rather than the AppleScript launcher: it needs no
+        // Automation permission prompt and works back to macOS 11.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcut("Cmd+Shift+V")
@@ -927,6 +999,7 @@ pub fn run() {
             recording_enabled: Mutex::new(default_enabled()),
             skip_text: Mutex::new(None),
             last_hidden_at: Mutex::new(0),
+            last_shown_at: Mutex::new(0),
             last_tray_rect: Mutex::new(None),
             snippets_dir: Mutex::new(None),
         })
@@ -934,6 +1007,17 @@ pub fn run() {
             // Clicking away should dismiss the panel, the way every other menu
             // bar extra behaves.
             if let tauri::WindowEvent::Focused(false) = event {
+                // …except for the blur that can arrive in the same instant as
+                // the show, before key status settles over a fullscreen space.
+                // Acting on that one would dismiss the panel the user just
+                // opened; Esc and the tray icon still close it either way.
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    let shown_ago =
+                        now_millis().saturating_sub(*state.last_shown_at.lock().unwrap());
+                    if shown_ago < FOCUS_GUARD_MS {
+                        return;
+                    }
+                }
                 if let Some(panel) = window.get_webview_window("main") {
                     hide_panel(&panel);
                 }
@@ -1072,6 +1156,8 @@ pub fn run() {
             get_snippets_dir,
             export_snippets_to,
             import_snippets_from,
+            get_autostart,
+            set_autostart,
             paste_and_hide,
         ])
         .run(tauri::generate_context!())
