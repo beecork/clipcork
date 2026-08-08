@@ -280,6 +280,30 @@ body {
 }
 .row-actions { display: none; align-items: center; gap: 2px; }
 .row:hover .row-actions, .row.sel .row-actions { display: flex; }
+
+/* "+ New snippet" bar at the end of the snippets list */
+.snippet-add {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin: 4px 0 2px;
+    padding: 9px 11px;
+    border-radius: var(--r-md);
+    color: var(--text-2);
+    font-size: 12.5px;
+    font-weight: 550;
+    cursor: pointer;
+    border: 1px dashed var(--hairline-str);
+    transition: color 90ms, border-color 90ms, background 90ms;
+}
+.snippet-add:hover { color: var(--text); border-color: var(--accent-line); background: var(--layer-1); }
+.sa-plus {
+    width: 20px; height: 20px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--layer-2); color: var(--text-2);
+    border-radius: var(--r-sm); font-weight: 700; font-size: 14px; line-height: 1;
+}
+.snippet-add:hover .sa-plus { background: var(--brand); color: var(--on-brand); }
 .act-btn {
     width: 26px;
     height: 26px;

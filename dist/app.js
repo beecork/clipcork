@@ -170,12 +170,23 @@ function render() {
     const cr = $('createRow');
     if (cr) cr.onclick = () => openAdd(query.trim());
 
-    if (!filtered.length) { $('list').innerHTML = ''; showEmpty(); return; }
-    $('empty').classList.add('hidden');
     const isSnip = scope === 'snippets';
-    $('list').innerHTML = filtered.map((it, i) => rowHTML(it, i, isSnip)).join('');
+    // A "+ New snippet" bar at the end of the list is the in-context way to add,
+    // so the header + doesn't have to carry the whole job.
+    const addBar = isSnip ? '<div class="snippet-add" id="snippetAddBar"><span class="sa-plus">+</span>New snippet</div>' : '';
+
+    if (!filtered.length) {
+        $('list').innerHTML = isSnip && !query.trim() ? addBar : '';
+        if (!(isSnip && !query.trim())) showEmpty();
+        wireAddBar();
+        return;
+    }
+    $('empty').classList.add('hidden');
+    $('list').innerHTML = filtered.map((it, i) => rowHTML(it, i, isSnip)).join('') + addBar;
+    wireAddBar();
     applySelection();
 }
+function wireAddBar() { const b = $('snippetAddBar'); if (b) b.onclick = () => openAdd(); }
 
 function applySelection() {
     const rows = $('list').children;
@@ -255,27 +266,40 @@ function onClipboardUpdate(entry) {
 }
 
 // ---- add / edit sheet ----
-function openAdd(prefillTitle) {
-    editingId = null;
-    $('addTitle').textContent = 'New snippet';
-    $('title').value = prefillTitle || ''; $('content').value = ''; $('tag').value = '';
-    $('addSheet').classList.remove('hidden');
-    // If seeded from the search query, jump straight to the content field.
-    setTimeout(() => (prefillTitle ? $('content') : $('title')).focus(), 0);
+let titleEdited = false;
+// A short title from the content's first line — the content is the snippet;
+// the title is just a label, so it's generated unless the user overrides it.
+function deriveTitle(text) {
+    const first = String(text || '').split('\n')[0].trim();
+    return first.length > 44 ? first.slice(0, 44).trim() + '…' : first;
 }
+function openAdd(prefillContent) {
+    editingId = null;
+    titleEdited = false;
+    $('addTitle').textContent = 'New snippet';
+    $('content').value = prefillContent || '';
+    $('title').value = deriveTitle(prefillContent || '');
+    $('tag').value = '';
+    $('addSheet').classList.remove('hidden');
+    // The text is the snippet — land the cursor there, not on the title.
+    setTimeout(() => { const c = $('content'); c.focus(); c.setSelectionRange(c.value.length, c.value.length); }, 0);
+}
+$('content').addEventListener('input', () => { if (!titleEdited) $('title').value = deriveTitle($('content').value); });
+$('title').addEventListener('input', () => { titleEdited = true; });
 function openEdit(it) {
     editingId = it.id;
+    titleEdited = true;   // existing snippet has a user-set title; don't auto-overwrite
     $('addTitle').textContent = 'Edit snippet';
     $('title').value = it.title; $('content').value = it.content; $('tag').value = it.tag || '';
     $('addSheet').classList.remove('hidden');
-    setTimeout(() => $('title').focus(), 0);
+    setTimeout(() => $('content').focus(), 0);
 }
 function closeAdd() { $('addSheet').classList.add('hidden'); }
 async function saveSnippet() {
-    const title = $('title').value.trim();
     const content = $('content').value.trim();
     const tag = $('tag').value.trim();
-    if (!title || !content) { toast('Title & content required'); return; }
+    const title = $('title').value.trim() || deriveTitle(content);
+    if (!content) { toast('Snippet text required'); return; }
     const now = Date.now();
     if (editingId) {
         const s = snippets.find(x => x.id === editingId);
