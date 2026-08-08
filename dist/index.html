@@ -8,103 +8,92 @@
 </head>
 <body>
     <div id="app">
-        <div class="toolbar">
-            <span class="logo">
-                <img class="logo-mark" src="clipcork-logo.svg" width="18" height="18" alt="">
-                ClipCork
-            </span>
-            <div class="toolbar-actions">
-                <button id="searchToggle" class="icon-btn" title="Search">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-                </button>
-                <button id="addToggle" class="icon-btn primary" title="Add snippet">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
-                </button>
+        <!-- Search is the primary verb: it IS the toolbar. -->
+        <div class="header">
+            <svg class="header-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input type="text" id="search" placeholder="Search clips and snippets" autocomplete="off" spellcheck="false">
+            <span class="kbd header-kbd">⌘K</span>
+        </div>
+
+        <div class="segments" id="segments">
+            <button class="seg active" data-scope="recent">Recent<span class="seg-count" id="countRecent"></span></button>
+            <button class="seg" data-scope="snippets">Snippets<span class="seg-count" id="countSnippets"></span></button>
+        </div>
+
+        <div class="list-wrap">
+            <div id="list" class="list"></div>
+            <div id="empty" class="empty hidden">
+                <div class="empty-glyph" id="emptyGlyph">◇</div>
+                <p class="empty-title" id="emptyTitle"></p>
+                <p class="empty-sub" id="emptySub"></p>
+                <button class="empty-btn hidden" id="emptyBtn"></button>
             </div>
         </div>
 
-        <div id="updateBanner" class="update-banner hidden">
-            <span id="updateText" class="ub-text">A new version is available.</span>
-            <button id="updateInstall" class="ub-install">Update &amp; Restart</button>
-            <button id="updateDismiss" class="ub-dismiss" title="Dismiss">&#10005;</button>
+        <div id="updatePill" class="update-pill hidden">
+            <span class="up-dot"></span>
+            <span class="up-text" id="updateText">A new version is ready.</span>
+            <button class="up-install" id="updateInstall">Update &amp; Restart</button>
+            <button class="up-dismiss" id="updateDismiss" title="Dismiss">&#10005;</button>
         </div>
 
-        <div id="searchBar" class="search-bar hidden">
-            <input type="text" id="search" placeholder="Search snippets..." autocomplete="off">
-        </div>
-
-        <div id="addPanel" class="add-panel hidden">
-            <input type="text" id="title" placeholder="Title">
-            <textarea id="content" placeholder="Snippet text..." rows="3"></textarea>
-            <div class="add-row">
-                <input type="text" id="tag" placeholder="Tag (optional)">
-                <button id="saveBtn" class="save-btn">Save</button>
-            </div>
-        </div>
-
-        <div class="tabs">
-            <button class="tab active" data-tab="snippets">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
-                Snippets
-            </button>
-            <button class="tab" data-tab="history">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="12 8 12 12 14 14"/><circle cx="12" cy="12" r="10"/></svg>
-                History
-            </button>
-            <button class="tab" data-tab="settings">
+        <div class="hintbar">
+            <span class="hint"><b class="kbd">⏎</b> Paste</span>
+            <span class="hint"><b class="kbd">⌘C</b> Copy</span>
+            <span class="hint"><b class="kbd">⌘N</b> New</span>
+            <span class="hint-spacer"></span>
+            <button class="hint-gear" id="gearBtn" title="Settings (⌘,)">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
             </button>
         </div>
 
-        <div id="tabSnippets" class="tab-content active">
-            <div id="filters" class="filters hidden"></div>
-            <div id="list" class="list"></div>
-            <div id="empty" class="empty">
-                <p>No snippets yet</p>
-                <p class="sub">Press + to add one</p>
+        <!-- Add / edit snippet sheet -->
+        <div id="addSheet" class="sheet hidden">
+            <div class="sheet-head">
+                <span class="sheet-title" id="addTitle">New snippet</span>
+                <button class="sheet-done" id="addCancel">Cancel</button>
+            </div>
+            <div class="sheet-body">
+                <input type="text" id="title" class="field" placeholder="Title">
+                <textarea id="content" class="field" placeholder="Snippet text…" rows="4"></textarea>
+                <div class="add-row">
+                    <input type="text" id="tag" class="field" placeholder="Tag (optional)">
+                    <button id="saveBtn" class="primary-btn">Save</button>
+                </div>
             </div>
         </div>
 
-        <div id="tabHistory" class="tab-content">
-            <div id="historyList" class="list"></div>
-            <div id="historyEmpty" class="empty">
-                <p>No clipboard history</p>
-                <p class="sub">Copy text to start tracking</p>
+        <!-- Settings sheet -->
+        <div id="settingsSheet" class="sheet hidden">
+            <div class="sheet-head">
+                <span class="sheet-title">Settings</span>
+                <button class="sheet-done" id="settingsDone">Done</button>
             </div>
-        </div>
-
-        <div id="tabSettings" class="tab-content">
-            <div class="settings-panel">
-                <div class="setting-group">
-                    <label class="setting-label">Record Clipboard</label>
-                    <div class="setting-options" id="recordOptions">
-                        <button class="setting-opt" data-rec="on">On</button>
-                        <button class="setting-opt" data-rec="off">Off</button>
+            <div class="sheet-body">
+                <div class="set-row">
+                    <span class="set-label">Record clipboard</span>
+                    <button class="switch" id="recordSwitch" role="switch" aria-checked="true"><span class="switch-knob"></span></button>
+                </div>
+                <div class="set-row">
+                    <span class="set-label">History size</span>
+                    <div class="seg-control" id="limitOptions">
+                        <button class="seg-opt" data-limit="20">20</button>
+                        <button class="seg-opt" data-limit="50">50</button>
+                        <button class="seg-opt" data-limit="200">200</button>
+                        <button class="seg-opt" data-limit="500">500</button>
                     </div>
                 </div>
-                <div class="setting-group">
-                    <label class="setting-label">Clipboard History Limit</label>
-                    <div class="setting-options" id="limitOptions">
-                        <button class="setting-opt" data-limit="5">5</button>
-                        <button class="setting-opt" data-limit="10">10</button>
-                        <button class="setting-opt" data-limit="20">20</button>
-                        <button class="setting-opt" data-limit="50">50</button>
-                    </div>
+                <div class="set-block">
+                    <span class="set-label">Global shortcut</span>
+                    <span class="set-value"><span class="kbd">⌘⇧V</span> to open</span>
                 </div>
-                <div class="setting-group">
-                    <label class="setting-label">Data Folder</label>
-                    <div class="setting-path" id="dataPath">Loading...</div>
-                    <p class="setting-note">Snippets and your clipboard history are stored here as plaintext JSON.</p>
+                <div class="set-block">
+                    <span class="set-label">Data folder</span>
+                    <div class="set-path" id="dataPath">Loading…</div>
+                    <p class="set-note">Snippets and clipboard history are stored here as plaintext JSON, owner-only.</p>
                 </div>
-                <button class="danger-btn" id="clearHistory">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                    Clear Clipboard History
-                </button>
-                <button class="quit-btn" id="quitApp">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
-                    Quit ClipCork
-                </button>
-                <p class="setting-note">You can also right-click the menu-bar icon to quit.</p>
+                <button class="danger-btn" id="clearHistory">Clear clipboard history</button>
+                <button class="quit-btn" id="quitApp">Quit ClipCork</button>
             </div>
         </div>
     </div>

@@ -1,7 +1,8 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 
@@ -11,6 +12,24 @@ use std::os::unix::fs::PermissionsExt;
 // How often the watcher samples the pasteboard. On macOS this only reads the
 // cheap `changeCount`; the text is decoded only when the count actually moved.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+// Copies larger than this are not logged to history. A multi-megabyte paste
+// would otherwise be held in memory three times over (Rust state, JS array, DOM)
+// and re-serialised on every subsequent copy. It stays on the system clipboard;
+// ClipCork just doesn't record it.
+const MAX_ENTRY_BYTES: usize = 100_000;
+
+// Monotonic tail for entry ids so two copies in the same millisecond can't
+// collide (row click handlers resolve by id).
+static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn next_id() -> String {
+    format!(
+        "{}-{}",
+        now_millis(),
+        ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 // Gap between the bottom of the menu bar icon and the top of the panel.
 const PANEL_GAP: f64 = 6.0;
@@ -47,6 +66,9 @@ struct ClipboardEntry {
     id: String,
     text: String,
     timestamp: u64,
+    // Pinned entries survive the history cap and sort to the top.
+    #[serde(default)]
+    pinned: bool,
 }
 
 struct AppState {
@@ -71,17 +93,25 @@ struct AppState {
 // Persistence — pure, path-based, atomic, and permission-tight.
 // ---------------------------------------------------------------------------
 
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+// Resolved once and cached — this is on the clipboard-capture hot path, so it
+// must not re-run `app_data_dir()` + two syscalls on every write.
 fn ensure_data_dir(app: &tauri::AppHandle) -> PathBuf {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::env::temp_dir().join("clipcork"));
-    let _ = fs::create_dir_all(&dir);
-    #[cfg(unix)]
-    {
-        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
-    }
-    dir
+    DATA_DIR
+        .get_or_init(|| {
+            let dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("clipcork"));
+            let _ = fs::create_dir_all(&dir);
+            #[cfg(unix)]
+            {
+                let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+            }
+            dir
+        })
+        .clone()
 }
 
 fn app_file(app: &tauri::AppHandle, name: &str) -> PathBuf {
@@ -241,6 +271,21 @@ fn save_settings_cmd(app: tauri::AppHandle, settings: Settings) {
 }
 
 #[tauri::command]
+fn toggle_pin(state: tauri::State<'_, AppState>, app: tauri::AppHandle, id: String) -> bool {
+    let (snapshot, pinned) = {
+        let mut history = state.clipboard_history.lock().unwrap();
+        let mut pinned = false;
+        if let Some(e) = history.iter_mut().find(|e| e.id == id) {
+            e.pinned = !e.pinned;
+            pinned = e.pinned;
+        }
+        (history.clone(), pinned)
+    };
+    let _ = write_json_atomic(&history_path(&app), &snapshot);
+    pinned
+}
+
+#[tauri::command]
 fn clear_clipboard_history(state: tauri::State<'_, AppState>, app: tauri::AppHandle) {
     state.clipboard_history.lock().unwrap().clear();
     // Reset the dedupe key so re-copying the just-cleared text records again.
@@ -260,7 +305,7 @@ fn pin_to_snippets(app: tauri::AppHandle, content: String) -> Snippet {
         preview
     };
     let snippet = Snippet {
-        id: now.to_string() + &std::process::id().to_string(),
+        id: next_id(),
         title,
         content,
         tag: String::new(),
@@ -451,8 +496,16 @@ fn poll_clipboard(_last_change: &mut isize) -> Option<Sample> {
 
 fn push_capped(history: &mut Vec<ClipboardEntry>, entry: ClipboardEntry, limit: usize) {
     history.insert(0, entry);
-    if history.len() > limit {
-        history.truncate(limit);
+    // Evict the oldest UNPINNED entries beyond the limit; pinned entries always
+    // stay, so the cap governs the unpinned tail only.
+    let mut unpinned = history.iter().filter(|e| !e.pinned).count();
+    let mut i = history.len();
+    while unpinned > limit && i > 0 {
+        i -= 1;
+        if !history[i].pinned {
+            history.remove(i);
+            unpinned -= 1;
+        }
     }
 }
 
@@ -485,20 +538,35 @@ fn process_sample(app: &tauri::AppHandle, sample: Sample) {
         *last = sample.text.clone();
     }
 
-    let now = now_millis();
-    let entry = ClipboardEntry {
-        id: now.to_string(),
-        text: sample.text,
-        timestamp: now,
-    };
+    // Don't log oversized pastes — it's still on the clipboard, just not recorded.
+    if sample.text.len() > MAX_ENTRY_BYTES {
+        return;
+    }
 
+    let now = now_millis();
+    let text = sample.text;
     let limit = *state.history_limit.lock().unwrap();
-    // Mutate under the lock, clone, then write/emit outside it — the 1Hz-ish
-    // disk write never blocks a main-thread command waiting on this mutex.
-    let snapshot = {
+
+    // Mutate under the lock, clone, then write/emit outside it — the disk write
+    // never blocks a main-thread command waiting on this mutex.
+    let (snapshot, entry) = {
         let mut history = state.clipboard_history.lock().unwrap();
+        // Move-to-top: if this exact text is already in history, drop the old
+        // copy (carrying its pinned flag forward) rather than duplicating it.
+        let was_pinned = history
+            .iter()
+            .find(|e| e.text == text)
+            .map(|e| e.pinned)
+            .unwrap_or(false);
+        history.retain(|e| e.text != text);
+        let entry = ClipboardEntry {
+            id: next_id(),
+            text,
+            timestamp: now,
+            pinned: was_pinned,
+        };
         push_capped(&mut history, entry.clone(), limit);
-        history.clone()
+        (history.clone(), entry)
     };
 
     let _ = write_json_atomic(&history_path(app), &snapshot);
@@ -580,7 +648,8 @@ mod panel {
     use objc2::runtime::AnyObject;
     use objc2::{define_class, ClassType, MainThreadOnly};
     use objc2_app_kit::{
-        NSPanel, NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+        NSColor, NSPanel, NSPopUpMenuWindowLevel, NSWindow, NSWindowCollectionBehavior,
+        NSWindowStyleMask,
     };
 
     define_class!(
@@ -628,6 +697,12 @@ mod panel {
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
                 | NSWindowCollectionBehavior::Stationary,
         );
+        // Make the window itself clear so the NSVisualEffectView (applied after
+        // adopt) is what the user sees — a transparent window with an opaque
+        // background color would hide the vibrancy entirely.
+        ns_window.setOpaque(false);
+        let clear = NSColor::clearColor();
+        ns_window.setBackgroundColor(Some(&clear));
     }
 
     pub fn make_key(window: &tauri::WebviewWindow) {
@@ -684,6 +759,26 @@ fn show_panel(window: &tauri::WebviewWindow) {
 
     #[cfg(not(target_os = "macos"))]
     let _ = window.set_focus();
+
+    // Let the frontend reset its search query, selection and scroll on each open.
+    let _ = window.emit("panel-shown", ());
+}
+
+// Global-hotkey entry point. Deliberately not `toggle_panel` — that path's
+// REOPEN_GUARD_MS exists to absorb the status item's own click and would eat
+// rapid hotkey presses.
+fn toggle_from_hotkey(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(false) {
+        hide_panel(&window);
+        return;
+    }
+    if let Some(rect) = app.state::<AppState>().last_tray_rect.lock().unwrap().clone() {
+        position_under_tray(&window, rect);
+    }
+    show_panel(&window);
 }
 
 fn hide_panel(window: &tauri::WebviewWindow) {
@@ -728,6 +823,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_shortcut("Cmd+Shift+V")
+                .expect("valid global shortcut")
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        toggle_from_hotkey(app);
+                    }
+                })
+                .build(),
+        )
         .manage(AppState {
             clipboard_history: Mutex::new(Vec::new()),
             last_clipboard: Mutex::new(String::new()),
@@ -837,7 +943,22 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 #[cfg(target_os = "macos")]
-                panel::adopt(&window);
+                {
+                    panel::adopt(&window);
+                    // Real macOS glass: the Popover material is exactly what
+                    // AppKit uses for menu-bar popovers, and it follows system
+                    // appearance. `Active` state keeps it from desaturating during
+                    // the focus handoff in `paste_and_hide`.
+                    use window_vibrancy::{
+                        apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
+                    };
+                    let _ = apply_vibrancy(
+                        &window,
+                        NSVisualEffectMaterial::Popover,
+                        Some(NSVisualEffectState::Active),
+                        Some(12.0),
+                    );
+                }
                 let _ = window.hide();
             }
 
@@ -854,6 +975,7 @@ pub fn run() {
             get_settings,
             save_settings_cmd,
             clear_clipboard_history,
+            toggle_pin,
             pin_to_snippets,
             paste_and_hide,
         ])
@@ -881,6 +1003,7 @@ mod tests {
             id: id.to_string(),
             text: format!("text-{id}"),
             timestamp: 1,
+            pinned: false,
         }
     }
 
@@ -940,6 +1063,21 @@ mod tests {
         // Newest first, oldest dropped.
         assert_eq!(history[0].id, "4");
         assert_eq!(history[2].id, "2");
+    }
+
+    #[test]
+    fn pinned_entries_survive_the_cap() {
+        let mut history: Vec<ClipboardEntry> = Vec::new();
+        let mut pin = entry("pinned");
+        pin.pinned = true;
+        history.push(pin);
+        // Push 3 unpinned with a limit of 2 — one unpinned should be evicted,
+        // the pinned one must remain.
+        for i in 0..3 {
+            push_capped(&mut history, entry(&i.to_string()), 2);
+        }
+        assert!(history.iter().any(|e| e.id == "pinned"));
+        assert_eq!(history.iter().filter(|e| !e.pinned).count(), 2);
     }
 
     #[test]

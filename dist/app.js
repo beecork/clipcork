@@ -1,28 +1,26 @@
 const $ = id => document.getElementById(id);
 
 let snippets = [];
-let clipboardHistory = [];
+let history = [];
+let scope = 'recent';          // 'recent' | 'snippets'
+let query = '';
+let filtered = [];             // the array the current DOM was built from
+let selectedIndex = 0;
 let editingId = null;
-let currentFilter = 'all';
-let currentTab = 'snippets';
 let settings = { history_limit: 20, enabled: true };
 
 async function invoke(cmd, args) {
-    if (window.__TAURI__) {
-        const { invoke: tauriInvoke } = window.__TAURI__.core;
-        return tauriInvoke(cmd, args);
-    }
+    if (window.__TAURI__) return window.__TAURI__.core.invoke(cmd, args);
     return null;
 }
+function tauriWindow() { return window.__TAURI__ ? window.__TAURI__.window.getCurrentWindow() : null; }
+function hidePanel() { const w = tauriWindow(); if (w) w.hide(); }
 
-// Escapes every character that is unsafe in either an element-text or a quoted
-// attribute context. Unlike the textContent/innerHTML trick, this also escapes
-// quotes, so values placed inside attributes cannot break out.
-function esc(s) {
-    return String(s).replace(/[&<>"']/g, c => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-    }[c]));
-}
+// Quote-safe HTML escaper (hoisted map — no per-call allocation).
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ESC_MAP[c]); }
+
+function truncate(s, n) { s = String(s); return s.length > n ? s.slice(0, n) + '…' : s; }
 
 function ago(ts) {
     const m = Math.floor((Date.now() - ts) / 60000);
@@ -34,491 +32,365 @@ function ago(ts) {
     if (d < 30) return d + 'd ago';
     return new Date(ts).toLocaleDateString();
 }
+function fmtSize(n) { return n < 1000 ? n + ' chars' : (n / 1000).toFixed(1) + 'k chars'; }
 
+let toastTimer = null;
 function toast(msg) {
     const t = $('toast');
     t.textContent = msg;
     t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 1500);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 1400);
 }
 
-async function loadData() {
-    if (window.__TAURI__) {
-        try { snippets = await invoke('load_snippets') || []; }
-        catch (e) { console.error('load_snippets failed', e); snippets = []; }
-    } else {
-        try { snippets = JSON.parse(localStorage.getItem('clipcork') || '[]'); } catch { snippets = []; }
-    }
+// A small glyph derived from the content itself, so the list scans without reading.
+function chipFor(text) {
+    const t = (text || '').trim();
+    if (/^https?:\/\//i.test(t)) return { g: '↗' };
+    if (/^(\/|~\/|\.\/|[A-Za-z]:\\)/.test(t)) return { g: '/' };
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return { g: '@' };
+    if (/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(t)) return { g: '◆', color: t };
+    if (/[{};=]|=>|<\/?[a-z]|\b(function|const|let|SELECT|import|export)\b/.test(t)) return { g: '{}' };
+    return { g: '¶' };
 }
 
-async function saveData() {
-    if (window.__TAURI__) {
-        try { await invoke('save_snippets', { snippets }); }
-        catch (e) { console.error('save_snippets failed', e); }
-    } else {
-        localStorage.setItem('clipcork', JSON.stringify(snippets));
-    }
-}
-
-async function loadHistory() {
-    if (window.__TAURI__) {
-        try { clipboardHistory = await invoke('load_clipboard_history') || []; }
-        catch (e) { console.error('load_clipboard_history failed', e); clipboardHistory = []; }
-    } else {
-        try { clipboardHistory = JSON.parse(localStorage.getItem('clipcork_history') || '[]'); } catch { clipboardHistory = []; }
-    }
-}
-
+// ---- data ----
+async function loadSnippets() { snippets = (await invoke('load_snippets')) || []; }
+async function saveSnippets() { await invoke('save_snippets', { snippets }); }
+async function loadHistory() { history = (await invoke('load_clipboard_history')) || []; }
 async function loadSettings() {
-    if (window.__TAURI__) {
-        try { settings = await invoke('get_settings') || { history_limit: 20, enabled: true }; }
-        catch (e) { console.error('get_settings failed', e); settings = { history_limit: 20, enabled: true }; }
-    } else {
-        try { settings = JSON.parse(localStorage.getItem('clipcork_settings') || '{"history_limit":20,"enabled":true}'); } catch { settings = { history_limit: 20, enabled: true }; }
-    }
+    settings = (await invoke('get_settings')) || { history_limit: 20, enabled: true };
     updateSettingsUI();
 }
+async function saveSettings() { await invoke('save_settings_cmd', { settings }); }
 
-async function saveSettings() {
-    if (window.__TAURI__) {
-        try { await invoke('save_settings_cmd', { settings }); }
-        catch (e) { console.error('save_settings_cmd failed', e); }
-    } else {
-        localStorage.setItem('clipcork_settings', JSON.stringify(settings));
-    }
+async function copyRaw(text) { if (window.__TAURI__) return !!(await invoke('write_clipboard', { text })); return false; }
+
+async function copyItem(it) {
+    await copyRaw(scope === 'snippets' ? it.content : it.text);
+    toast('Copied');
+    hidePanel();
 }
-
-async function copyText(text) {
-    if (window.__TAURI__) {
-        const ok = await invoke('write_clipboard', { text });
-        if (ok) { toast('Copied!'); return; }
-    }
-    navigator.clipboard.writeText(text).then(() => toast('Copied!')).catch(() => {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        toast('Copied!');
-    });
-}
-
-async function pasteText(text) {
+async function pasteItem(it) {
+    const text = scope === 'snippets' ? it.content : it.text;
     if (window.__TAURI__) {
         const ok = await invoke('paste_and_hide', { text });
         if (ok === false) toast('Enable Accessibility to paste');
     }
 }
+function activate(it) { pasteItem(it); }
 
-function getTags() {
-    const tags = new Set();
-    snippets.forEach(s => { if (s.tag) tags.add(s.tag.toLowerCase()); });
-    return [...tags].sort();
+async function togglePinItem(it) {
+    if (window.__TAURI__) it.pinned = await invoke('toggle_pin', { id: it.id });
+    else it.pinned = !it.pinned;
+    render();
+}
+async function saveAsSnippet(it) {
+    if (window.__TAURI__) { const s = await invoke('pin_to_snippets', { content: it.text }); if (s) snippets.unshift(s); }
+    toast('Saved as snippet');
 }
 
-function renderFilters() {
-    const tags = getTags();
-    if (tags.length < 2) { $('filters').classList.add('hidden'); return; }
-    $('filters').classList.remove('hidden');
-    $('filters').innerHTML = '<button class="filter-btn ' + (currentFilter === 'all' ? 'active' : '') + '" data-f="all">All</button>' +
-        tags.map(t => '<button class="filter-btn ' + (currentFilter === t ? 'active' : '') + '" data-f="' + esc(t) + '">' + esc(t) + '</button>').join('');
+// ---- icons ----
+const IC_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+const IC_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
+const IC_DEL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
+const IC_PIN = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4-4.8-2.5-4.8 2.5.9-5.4L4.2 7.7l5.4-.8z"/></svg>';
+const IC_BOOKMARK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
+
+function actBtn(action, icon, title, cls) {
+    return '<button class="act-btn ' + (cls || '') + '" data-action="' + action + '" title="' + title + '">' + icon + '</button>';
+}
+function chipHTML(chip) {
+    const style = chip.color ? ' style="color:' + esc(chip.color) + '"' : '';
+    return '<span class="row-chip"' + style + '>' + esc(chip.g) + '</span>';
+}
+function rightSlot(i, btns) {
+    const hint = i < 9 ? '<span class="row-hint">⌘' + (i + 1) + '</span>' : '';
+    return '<div class="row-right">' + hint + '<div class="row-actions">' + btns.join('') + '</div></div>';
 }
 
-// Icon markup lives in constants so the render functions stay readable and the
-// SVGs aren't duplicated across the two lists.
-const IC_EXPAND = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg>';
-const IC_COPY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
-const IC_EDIT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>';
-const IC_DEL = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
-const IC_PIN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76z"/></svg>';
-const IC_PASTE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H9a1 1 0 0 0-1 1v2a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V3a1 1 0 0 0-1-1z"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg>';
+function rowHTML(it, i, isSnip) {
+    if (isSnip) {
+        const tagOn = it.tag && it.tag.toLowerCase() === query.toLowerCase().trim();
+        return '<div class="row" data-id="' + esc(it.id) + '" data-i="' + i + '">' +
+            chipHTML(chipFor(it.content)) +
+            '<div class="row-body">' +
+                '<div class="row-title">' + esc(it.title) + '</div>' +
+                '<div class="row-text">' + esc(truncate(it.content, 160)) + '</div>' +
+                (it.tag ? '<div class="row-meta"><span class="row-tag' + (tagOn ? ' on' : '') + '">' + esc(it.tag) + '</span></div>' : '') +
+            '</div>' +
+            rightSlot(i, [actBtn('copy', IC_COPY, 'Copy'), actBtn('edit', IC_EDIT, 'Edit'), actBtn('delete', IC_DEL, 'Delete', 'del')]) +
+        '</div>';
+    }
+    return '<div class="row" data-id="' + esc(it.id) + '" data-i="' + i + '">' +
+        chipHTML(chipFor(it.text)) +
+        '<div class="row-body">' +
+            '<div class="row-text">' + esc(truncate(it.text, 160)) + '</div>' +
+            '<div class="row-meta"><span>' + ago(it.timestamp) + '</span><span>·</span><span>' + fmtSize(it.text.length) + '</span>' + (it.pinned ? '<span>·</span><span>pinned</span>' : '') + '</div>' +
+        '</div>' +
+        rightSlot(i, [
+            actBtn('pin', IC_PIN, it.pinned ? 'Unpin' : 'Pin', it.pinned ? 'on' : ''),
+            actBtn('snippet', IC_BOOKMARK, 'Save as snippet'),
+            actBtn('copy', IC_COPY, 'Copy'),
+        ]) +
+    '</div>';
+}
 
-function actBtn(action, icon, title) {
-    return '<button class="act-btn ' + action + '" data-action="' + action + '" title="' + title + '">' + icon + '</button>';
+function matchesSnippet(s, q) { return !q || s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q) || (s.tag && s.tag.toLowerCase().includes(q)); }
+function matchesHistory(h, q) { return !q || h.text.toLowerCase().includes(q); }
+
+function computeFiltered() {
+    const q = query.toLowerCase().trim();
+    const hCount = history.filter(h => matchesHistory(h, q)).length;
+    const sCount = snippets.filter(s => matchesSnippet(s, q)).length;
+    $('countRecent').textContent = hCount || '';
+    $('countSnippets').textContent = sCount || '';
+    filtered = scope === 'snippets'
+        ? snippets.filter(s => matchesSnippet(s, q))
+        : history.filter(h => matchesHistory(h, q));
+    if (selectedIndex >= filtered.length) selectedIndex = Math.max(0, filtered.length - 1);
 }
 
 function render() {
-    const q = $('search').value.toLowerCase().trim();
-    let list = snippets;
-    if (currentFilter !== 'all') list = list.filter(s => s.tag && s.tag.toLowerCase() === currentFilter);
-    if (q) list = list.filter(s => s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q) || (s.tag && s.tag.toLowerCase().includes(q)));
-
-    renderFilters();
-
-    if (list.length === 0) {
-        $('list').classList.add('hidden');
-        $('empty').classList.remove('hidden');
-        $('empty').querySelector('p').textContent = q || currentFilter !== 'all' ? 'No matches' : 'No snippets yet';
-        $('empty').querySelector('.sub').textContent = q ? 'Try a different search' : 'Press + to add one';
-        return;
-    }
-
+    computeFiltered();
+    if (!filtered.length) { $('list').innerHTML = ''; showEmpty(); return; }
     $('empty').classList.add('hidden');
-    $('list').classList.remove('hidden');
-    $('list').innerHTML = list.map(s => {
-        const isLong = s.content.length > 80;
-        return '<div class="item" data-id="' + esc(s.id) + '">' +
-            '<div class="item-body" data-action="copy">' +
-                '<div class="item-title">' + esc(s.title) + '</div>' +
-                '<div class="item-preview">' + esc(s.content) + '</div>' +
-                '<div class="item-meta">' +
-                    (s.tag ? '<span class="item-tag">' + esc(s.tag) + '</span>' : '') +
-                    '<span class="item-age">' + ago(s.created) + '</span>' +
-                '</div>' +
-            '</div>' +
-            '<div class="item-actions">' +
-                (isLong ? actBtn('expand', IC_EXPAND, 'Expand') : '') +
-                actBtn('copy', IC_COPY, 'Copy') +
-                actBtn('edit', IC_EDIT, 'Edit') +
-                actBtn('delete', IC_DEL, 'Delete') +
-            '</div>' +
-        '</div>';
-    }).join('');
+    const isSnip = scope === 'snippets';
+    $('list').innerHTML = filtered.map((it, i) => rowHTML(it, i, isSnip)).join('');
+    applySelection();
 }
 
-function renderHistory() {
-    if (clipboardHistory.length === 0) {
-        $('historyList').classList.add('hidden');
-        $('historyEmpty').classList.remove('hidden');
-        return;
-    }
-
-    $('historyEmpty').classList.add('hidden');
-    $('historyList').classList.remove('hidden');
-    $('historyList').innerHTML = clipboardHistory.map(h => {
-        const isLong = h.text.length > 100;
-        return '<div class="history-item" data-id="' + esc(h.id) + '">' +
-            '<div class="history-body" data-action="copy">' +
-                '<div class="history-text">' + esc(h.text) + '</div>' +
-                '<div class="history-time">' + ago(h.timestamp) + '</div>' +
-            '</div>' +
-            '<div class="history-actions">' +
-                (isLong ? actBtn('expand', IC_EXPAND, 'Expand') : '') +
-                actBtn('pin', IC_PIN, 'Save as snippet') +
-                actBtn('paste', IC_PASTE, 'Paste') +
-                actBtn('copy', IC_COPY, 'Copy') +
-            '</div>' +
-        '</div>';
-    }).join('');
+function applySelection() {
+    const rows = $('list').children;
+    for (let i = 0; i < rows.length; i++) rows[i].classList.toggle('sel', i === selectedIndex);
+}
+function moveSel(d) {
+    if (!filtered.length) return;
+    selectedIndex = Math.max(0, Math.min(filtered.length - 1, selectedIndex + d));
+    applySelection();
+    const row = $('list').children[selectedIndex];
+    if (row) row.scrollIntoView({ block: 'nearest' });
 }
 
-// One delegated handler per list — no inline onclick, so the strict CSP holds
-// and no id is ever interpolated into an executable context.
+function showEmpty() {
+    const q = query.trim();
+    const empty = $('empty');
+    empty.classList.remove('hidden');
+    let glyph = '◇', title = 'Nothing copied yet', sub = 'Copy something and it shows up here.', btn = '';
+    if (q) { glyph = '⌕'; title = 'No matches for “' + q + '”'; sub = 'Search covers titles, content, and tags.'; }
+    else if (scope === 'snippets') { glyph = '＋'; title = 'No saved snippets'; sub = 'Save anything you paste often.'; btn = 'New snippet'; }
+    else if (settings.enabled === false) { glyph = '⏻'; title = 'Clipboard recording is off'; sub = 'Turn it back on in Settings.'; btn = 'Open Settings'; }
+    $('emptyGlyph').textContent = glyph;
+    $('emptyTitle').textContent = title;
+    $('emptySub').textContent = sub;
+    const b = $('emptyBtn');
+    if (btn) { b.textContent = btn; b.classList.remove('hidden'); b.onclick = () => (scope === 'snippets' ? openAdd() : openSettings()); }
+    else b.classList.add('hidden');
+}
+
+function setSegActive() {
+    document.querySelectorAll('.seg').forEach(s => s.classList.toggle('active', s.dataset.scope === scope));
+}
+function switchScope(s) {
+    if (s === scope) return;
+    scope = s; setSegActive(); selectedIndex = 0; render(); $('search').focus();
+}
+
+// ---- list interaction ----
 $('list').addEventListener('click', e => {
-    const item = e.target.closest('.item');
-    if (!item) return;
-    const actionEl = e.target.closest('[data-action]');
-    if (!actionEl) return;
-    const id = item.dataset.id;
-    const s = snippets.find(x => x.id === id);
-    if (!s) return;
-    switch (actionEl.dataset.action) {
-        case 'copy': copyText(s.content); break;
-        case 'edit': editItem(id); break;
-        case 'delete': deleteItem(id); break;
-        case 'expand': { const p = item.querySelector('.item-preview'); if (p) p.classList.toggle('expanded'); break; }
+    const row = e.target.closest('.row'); if (!row) return;
+    const id = row.dataset.id;
+    const actEl = e.target.closest('[data-action]');
+    if (scope === 'snippets') {
+        const it = snippets.find(s => s.id === id); if (!it) return;
+        if (!actEl) { e.metaKey ? copyItem(it) : activate(it); return; }
+        const a = actEl.dataset.action;
+        if (a === 'copy') copyItem(it);
+        else if (a === 'edit') openEdit(it);
+        else if (a === 'delete') deleteSnippet(id);
+    } else {
+        const it = history.find(h => h.id === id); if (!it) return;
+        if (!actEl) { e.metaKey ? copyItem(it) : activate(it); return; }
+        const a = actEl.dataset.action;
+        if (a === 'copy') copyItem(it);
+        else if (a === 'pin') togglePinItem(it);
+        else if (a === 'snippet') saveAsSnippet(it);
     }
 });
-
-$('historyList').addEventListener('click', e => {
-    const item = e.target.closest('.history-item');
-    if (!item) return;
-    const actionEl = e.target.closest('[data-action]');
-    if (!actionEl) return;
-    const id = item.dataset.id;
-    const h = clipboardHistory.find(x => x.id === id);
-    if (!h) return;
-    switch (actionEl.dataset.action) {
-        case 'copy': copyText(h.text); break;
-        case 'paste': pasteText(h.text); break;
-        case 'pin': pinItem(id); break;
-        case 'expand': { const t = item.querySelector('.history-text'); if (t) t.classList.toggle('expanded'); break; }
-    }
+$('list').addEventListener('mousemove', e => {
+    const row = e.target.closest('.row'); if (!row) return;
+    const i = parseInt(row.dataset.i, 10);
+    if (i !== selectedIndex) { selectedIndex = i; applySelection(); }
 });
 
-function switchTab(tab) {
-    currentTab = tab;
-    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-    const targetId = 'tab' + tab.charAt(0).toUpperCase() + tab.slice(1);
-    document.querySelectorAll('.tab-content').forEach(tc => tc.classList.toggle('active', tc.id === targetId));
+$('segments').addEventListener('click', e => { const seg = e.target.closest('.seg'); if (seg) switchScope(seg.dataset.scope); });
+$('gearBtn').onclick = openSettings;
 
-    // Render from in-memory state — snippets change only through this panel and
-    // history is kept live by the clipboard-update event, so a disk reload on
-    // every tab switch is both unnecessary and the cause of a visible re-render.
-    if (tab === 'history') renderHistory();
-    if (tab === 'snippets') render();
-}
-
-function updateSettingsUI() {
-    document.querySelectorAll('#limitOptions .setting-opt').forEach(opt => {
-        opt.classList.toggle('active', parseInt(opt.dataset.limit) === settings.history_limit);
-    });
-    document.querySelectorAll('#recordOptions .setting-opt').forEach(opt => {
-        opt.classList.toggle('active', (opt.dataset.rec === 'on') === (settings.enabled !== false));
-    });
-}
-
-function togglePanel(panelId, btnId) {
-    const panel = $(panelId);
-    const btn = $(btnId);
-    const isHidden = panel.classList.contains('hidden');
-    panel.classList.toggle('hidden');
-    btn.classList.toggle('active', isHidden);
-    if (isHidden && panelId === 'addPanel') {
-        $('searchBar').classList.add('hidden');
-        $('searchToggle').classList.remove('active');
-    }
-    if (isHidden && panelId === 'searchBar') {
-        $('addPanel').classList.add('hidden');
-        $('addToggle').classList.remove('active');
-    }
-}
+$('search').addEventListener('input', () => { query = $('search').value; selectedIndex = 0; render(); });
 
 function onClipboardUpdate(entry) {
-    // A focus/tab reload can read the file after the watcher wrote it but before
-    // this event arrives, so guard against inserting the same entry twice.
-    if (clipboardHistory.some(h => h.id === entry.id)) return;
-    clipboardHistory.unshift(entry);
-    if (clipboardHistory.length > settings.history_limit) {
-        clipboardHistory = clipboardHistory.slice(0, settings.history_limit);
-    }
-    if (currentTab === 'history') renderHistory();
+    history = history.filter(h => h.text !== entry.text);
+    history.unshift(entry);
+    if (history.length > 600) history.length = 600;   // session safety cap
+    if (scope === 'recent') render();
 }
 
-$('searchToggle').onclick = () => togglePanel('searchBar', 'searchToggle');
-$('addToggle').onclick = () => togglePanel('addPanel', 'addToggle');
-$('search').oninput = render;
-
-$('filters').onclick = e => {
-    if (e.target.classList.contains('filter-btn')) {
-        currentFilter = e.target.dataset.f;
-        render();
-    }
-};
-
-document.querySelectorAll('.tab').forEach(tab => {
-    tab.onclick = () => switchTab(tab.dataset.tab);
-});
-
-$('limitOptions').onclick = async e => {
-    const opt = e.target.closest('.setting-opt');
-    if (!opt) return;
-    settings.history_limit = parseInt(opt.dataset.limit);
-    await saveSettings();
-    updateSettingsUI();
-    toast('Saved');
-};
-
-$('recordOptions').onclick = async e => {
-    const opt = e.target.closest('.setting-opt');
-    if (!opt) return;
-    settings.enabled = opt.dataset.rec === 'on';
-    await saveSettings();
-    updateSettingsUI();
-    toast(settings.enabled ? 'Recording on' : 'Recording off');
-};
-
-$('quitApp').onclick = async () => {
-    if (window.__TAURI__) {
-        try { await window.__TAURI__.core.invoke('plugin:process|exit', { code: 0 }); }
-        catch (e) { console.error('quit failed', e); }
-    }
-};
-
-$('clearHistory').onclick = async () => {
-    if (window.__TAURI__) {
-        try { await invoke('clear_clipboard_history'); }
-        catch (e) { console.error('clear_clipboard_history failed', e); }
-    }
-    clipboardHistory = [];
-    renderHistory();
-    toast('History cleared');
-};
-
-async function saveItem() {
+// ---- add / edit sheet ----
+function openAdd() {
+    editingId = null;
+    $('addTitle').textContent = 'New snippet';
+    $('title').value = ''; $('content').value = ''; $('tag').value = '';
+    $('addSheet').classList.remove('hidden');
+    setTimeout(() => $('title').focus(), 0);
+}
+function openEdit(it) {
+    editingId = it.id;
+    $('addTitle').textContent = 'Edit snippet';
+    $('title').value = it.title; $('content').value = it.content; $('tag').value = it.tag || '';
+    $('addSheet').classList.remove('hidden');
+    setTimeout(() => $('title').focus(), 0);
+}
+function closeAdd() { $('addSheet').classList.add('hidden'); }
+async function saveSnippet() {
     const title = $('title').value.trim();
     const content = $('content').value.trim();
     const tag = $('tag').value.trim();
     if (!title || !content) { toast('Title & content required'); return; }
-
     const now = Date.now();
     if (editingId) {
-        const idx = snippets.findIndex(s => s.id === editingId);
-        if (idx !== -1) { snippets[idx].title = title; snippets[idx].content = content; snippets[idx].tag = tag; snippets[idx].updated = now; }
-        editingId = null;
-        $('saveBtn').textContent = 'Save';
+        const s = snippets.find(x => x.id === editingId);
+        if (s) { s.title = title; s.content = content; s.tag = tag; s.updated = now; }
         toast('Updated');
     } else {
         snippets.unshift({ id: now.toString(36) + Math.random().toString(36).slice(2, 6), title, content, tag, created: now, updated: now });
         toast('Saved');
     }
-
-    await saveData();
-    $('title').value = ''; $('content').value = ''; $('tag').value = '';
-    $('addPanel').classList.add('hidden');
-    $('addToggle').classList.remove('active');
+    await saveSnippets();
+    editingId = null;
+    closeAdd();
     render();
 }
-
-$('saveBtn').onclick = saveItem;
-$('content').onkeydown = e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveItem(); };
-
-function editItem(id) {
-    const s = snippets.find(x => x.id === id);
-    if (!s) return;
-    $('title').value = s.title;
-    $('content').value = s.content;
-    $('tag').value = s.tag || '';
-    editingId = id;
-    $('saveBtn').textContent = 'Update';
-    $('addPanel').classList.remove('hidden');
-    $('addToggle').classList.add('active');
-    switchTab('snippets');
-    $('title').focus();
-}
-
-async function deleteItem(id) {
+async function deleteSnippet(id) {
     snippets = snippets.filter(s => s.id !== id);
-    await saveData();
-    if (editingId === id) { editingId = null; $('saveBtn').textContent = 'Save'; $('title').value = ''; $('content').value = ''; $('tag').value = ''; }
+    await saveSnippets();
     render();
     toast('Deleted');
 }
+$('saveBtn').onclick = saveSnippet;
+$('addCancel').onclick = closeAdd;
 
-async function pinItem(id) {
-    const entry = clipboardHistory.find(x => x.id === id);
-    if (!entry) return;
+// ---- settings sheet ----
+function updateSettingsUI() {
+    $('recordSwitch').setAttribute('aria-checked', settings.enabled !== false ? 'true' : 'false');
+    document.querySelectorAll('#limitOptions .seg-opt').forEach(o => o.classList.toggle('active', parseInt(o.dataset.limit, 10) === settings.history_limit));
+}
+function openSettings() { $('settingsSheet').classList.remove('hidden'); updateSettingsUI(); }
+function closeSettings() { $('settingsSheet').classList.add('hidden'); resetClearBtn(); }
+$('settingsDone').onclick = closeSettings;
 
-    if (window.__TAURI__) {
-        try {
-            const snippet = await invoke('pin_to_snippets', { content: entry.text });
-            snippets.unshift(snippet);
-        } catch (e) { console.error('pin_to_snippets failed', e); return; }
-    } else {
-        const now = Date.now();
-        const preview = [...entry.text].slice(0, 50).join('');
-        snippets.unshift({
-            id: now.toString(36) + Math.random().toString(36).slice(2, 6),
-            title: [...entry.text].length > 50 ? preview + '...' : preview,
-            content: entry.text,
-            tag: '',
-            created: now,
-            updated: now,
-        });
-        await saveData();
+$('recordSwitch').onclick = async () => {
+    settings.enabled = !(settings.enabled !== false);
+    updateSettingsUI(); await saveSettings();
+    toast(settings.enabled ? 'Recording on' : 'Recording off');
+};
+$('limitOptions').addEventListener('click', async e => {
+    const o = e.target.closest('.seg-opt'); if (!o) return;
+    settings.history_limit = parseInt(o.dataset.limit, 10);
+    updateSettingsUI(); await saveSettings(); toast('Saved');
+});
+
+let clearArmed = false;
+function resetClearBtn() { clearArmed = false; $('clearHistory').textContent = 'Clear clipboard history'; }
+$('clearHistory').onclick = async () => {
+    if (!clearArmed) { clearArmed = true; $('clearHistory').textContent = 'Click again to clear ' + history.length + ' items'; return; }
+    await invoke('clear_clipboard_history');
+    history = [];
+    resetClearBtn();
+    render();
+    toast('History cleared');
+};
+$('quitApp').onclick = async () => { try { await invoke('plugin:process|exit', { code: 0 }); } catch (e) { console.error('quit failed', e); } };
+
+// ---- keyboard ----
+document.addEventListener('keydown', e => {
+    const addOpen = !$('addSheet').classList.contains('hidden');
+    const setOpen = !$('settingsSheet').classList.contains('hidden');
+    if (addOpen || setOpen) {
+        if (e.key === 'Escape') { closeAdd(); closeSettings(); e.preventDefault(); }
+        else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && addOpen) { saveSnippet(); e.preventDefault(); }
+        return;
     }
+    const meta = e.metaKey || e.ctrlKey;
+    if (e.key === 'ArrowDown') { moveSel(1); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { moveSel(-1); e.preventDefault(); }
+    else if (e.key === 'Enter') { const it = filtered[selectedIndex]; if (it) (e.metaKey ? copyItem(it) : activate(it)); e.preventDefault(); }
+    else if (meta && e.key >= '1' && e.key <= '9') { const it = filtered[+e.key - 1]; if (it) activate(it); e.preventDefault(); }
+    else if ((meta && (e.key === 'k' || e.key === 'K')) || e.key === 'Tab') { switchScope(scope === 'recent' ? 'snippets' : 'recent'); e.preventDefault(); }
+    else if (meta && (e.key === 'n' || e.key === 'N')) { openAdd(); e.preventDefault(); }
+    else if (meta && e.key === ',') { openSettings(); e.preventDefault(); }
+    else if (meta && e.key === 'Backspace') { const it = filtered[selectedIndex]; if (it && scope === 'snippets') deleteSnippet(it.id); e.preventDefault(); }
+    else if (e.key === 'Escape') { if ($('search').value) { $('search').value = ''; query = ''; selectedIndex = 0; render(); } else hidePanel(); e.preventDefault(); }
+});
 
-    toast('Pinned as snippet');
+function resetUI() {
+    query = ''; $('search').value = ''; scope = 'recent'; setSegActive();
+    selectedIndex = 0; closeAdd(); closeSettings();
+    render();
+    $('search').focus();
+    $('list').scrollTop = 0;
 }
 
-// ---- Auto-update (mirrors beecork-terminal's UpdateBanner) -----------------
-// The no-bundler frontend drives the updater/process plugins through the
-// guaranteed-global core.invoke + Channel, rather than the npm ESM wrappers.
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
-let pendingUpdate = null;   // { rid, version, ... } from plugin:updater|check
-let dismissedVersion = null;
-let updateBusy = false;
-
+// ---- auto-update (raw plugin invoke; matches beecork-terminal) ----
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let pendingUpdate = null, dismissedVersion = null, updateBusy = false;
 async function checkForUpdate() {
-    if (!window.__TAURI__) return;
-    if (updateBusy) return;
+    if (!window.__TAURI__ || updateBusy) return;
     try {
-        // Returns null when up to date, else update metadata (with a `rid`).
         const meta = await window.__TAURI__.core.invoke('plugin:updater|check', {});
         if (updateBusy) return;
         if (meta && meta.version && meta.version !== dismissedVersion) {
             pendingUpdate = meta;
-            $('updateText').textContent = 'ClipCork ' + meta.version + ' is available.';
-            $('updateInstall').textContent = 'Update & Restart';
-            $('updateInstall').disabled = false;
-            $('updateBanner').classList.remove('hidden');
+            $('updateText').textContent = 'ClipCork ' + meta.version + ' is ready.';
+            $('updateInstall').textContent = 'Update & Restart'; $('updateInstall').disabled = false;
+            $('updatePill').classList.remove('hidden');
         }
-    } catch (e) {
-        // Offline, no release yet, or endpoint unreachable — stay quiet.
-        console.error('update check failed', e);
-    }
+    } catch (e) { console.error('update check failed', e); }
 }
-
-async function installUpdate() {
+$('updateInstall').onclick = async () => {
     if (!pendingUpdate || updateBusy) return;
     updateBusy = true;
-    const btn = $('updateInstall');
-    btn.disabled = true;
-    btn.textContent = 'Installing…';
+    const btn = $('updateInstall'); btn.disabled = true; btn.textContent = 'Installing…';
     try {
         const core = window.__TAURI__.core;
-        const onEvent = new core.Channel();
-        await core.invoke('plugin:updater|download_and_install', {
-            onEvent,
-            rid: pendingUpdate.rid,
-        });
+        await core.invoke('plugin:updater|download_and_install', { onEvent: new core.Channel(), rid: pendingUpdate.rid });
         await core.invoke('plugin:process|restart');
     } catch (e) {
         console.error('update install failed', e);
-        $('updateText').textContent = 'Update failed.';
-        btn.textContent = 'Retry';
-        btn.disabled = false;
-        updateBusy = false;
+        $('updateText').textContent = "Couldn't download the update. Check your connection.";
+        btn.textContent = 'Retry'; btn.disabled = false; updateBusy = false;
     }
-}
-
-$('updateInstall').onclick = installUpdate;
-$('updateDismiss').onclick = () => {
-    dismissedVersion = pendingUpdate ? pendingUpdate.version : null;
-    pendingUpdate = null;
-    $('updateBanner').classList.add('hidden');
 };
+$('updateDismiss').onclick = () => { dismissedVersion = pendingUpdate ? pendingUpdate.version : null; pendingUpdate = null; $('updatePill').classList.add('hidden'); };
 
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-        if (window.__TAURI__) {
-            const { getCurrentWindow } = window.__TAURI__.window;
-            getCurrentWindow().hide();
-        }
-    }
-});
-
+// ---- boot ----
 document.addEventListener('DOMContentLoaded', async () => {
-    await loadData();
+    await loadSnippets();
     await loadHistory();
     await loadSettings();
-
-    switchTab('snippets');
+    setSegActive();
+    render();
 
     if (window.__TAURI__) {
-        const { getCurrentWindow } = window.__TAURI__.window;
-        getCurrentWindow().onCloseRequested(async (e) => {
-            e.preventDefault();
-            getCurrentWindow().hide();
-        });
+        const win = tauriWindow();
+        win.onCloseRequested(async (e) => { e.preventDefault(); win.hide(); });
 
-        // The panel is preloaded hidden at launch, so its content is already
-        // rendered before the first show — no reload-on-focus (that reload was
-        // what made the first open flicker). History stays current via the
-        // clipboard-update event; snippets only change through this panel.
+        try { $('dataPath').textContent = (await invoke('get_data_path')) || ''; } catch (e) { console.error('get_data_path failed', e); }
 
-        // Opened from the tray's right-click "Settings" item.
-        try {
-            const { listen } = window.__TAURI__.event;
-            await listen('open-settings', () => switchTab('settings'));
-        } catch (e) { console.error('open-settings listener failed', e); }
+        const { listen } = window.__TAURI__.event;
+        try { await listen('clipboard-update', ev => onClipboardUpdate(ev.payload)); } catch (e) { console.error('clipboard-update listener failed', e); }
+        try { await listen('panel-shown', resetUI); } catch (e) { console.error('panel-shown listener failed', e); }
+        try { await listen('open-settings', openSettings); } catch (e) { console.error('open-settings listener failed', e); }
 
-        try {
-            const dataPath = await invoke('get_data_path');
-            $('dataPath').textContent = dataPath;
-        } catch (e) { console.error('get_data_path failed', e); }
-
-        try {
-            const { listen } = window.__TAURI__.event;
-            await listen('clipboard-update', (event) => {
-                onClipboardUpdate(event.payload);
-            });
-        } catch (e) {
-            console.error('clipboard-update listener failed to register', e);
-        }
-
-        // Check for updates on launch, then periodically while the panel lives.
         checkForUpdate();
         setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
     }

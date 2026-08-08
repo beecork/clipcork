@@ -1,27 +1,24 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ClipCork",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "identifier": "com.beecork.clipcork",
   "build": {
     "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": true,
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
         "title": "ClipCork",
         "width": 360,
-        "height": 520,
-        "minWidth": 320,
-        "minHeight": 300,
-        "maxWidth": 500,
-        "maxHeight": 700,
-        "resizable": true,
-        "hiddenTitle": true,
-        "titleBarStyle": "Overlay",
+        "height": 496,
+        "resizable": false,
         "decorations": false,
+        "transparent": true,
+        "visible": false,
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "shadow": true
