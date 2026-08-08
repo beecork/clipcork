@@ -319,6 +319,13 @@ $('recordOptions').onclick = async e => {
     toast(settings.enabled ? 'Recording on' : 'Recording off');
 };
 
+$('quitApp').onclick = async () => {
+    if (window.__TAURI__) {
+        try { await window.__TAURI__.core.invoke('plugin:process|exit', { code: 0 }); }
+        catch (e) { console.error('quit failed', e); }
+    }
+};
+
 $('clearHistory').onclick = async () => {
     if (window.__TAURI__) {
         try { await invoke('clear_clipboard_history'); }
