@@ -10,15 +10,19 @@
     <div id="app">
         <!-- Search is the primary verb: it IS the toolbar. -->
         <div class="header">
-            <svg class="header-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-            <input type="text" id="search" placeholder="Search clips and snippets" autocomplete="off" spellcheck="false">
-            <span class="kbd header-kbd">⌘K</span>
+            <svg class="header-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input type="text" id="search" placeholder="Search or create…" autocomplete="off" spellcheck="false">
+            <button class="add-btn" id="addBtn" title="New snippet (⌘N)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
         </div>
 
         <div class="segments" id="segments">
-            <button class="seg active" data-scope="recent">Recent<span class="seg-count" id="countRecent"></span></button>
-            <button class="seg" data-scope="snippets">Snippets<span class="seg-count" id="countSnippets"></span></button>
+            <button class="seg active" data-scope="snippets">Snippets<span class="seg-count" id="countSnippets"></span></button>
+            <button class="seg" data-scope="history">Clipboard History<span class="seg-count" id="countHistory"></span></button>
         </div>
+
+        <div id="createSlot" class="create-slot"></div>
 
         <div class="list-wrap">
             <div id="list" class="list"></div>

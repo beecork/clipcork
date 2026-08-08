@@ -8,22 +8,23 @@
     --brand:     #e8795a;
     --on-brand:  #2a0f07;
 
-    /* Glass — light (default) */
-    --scrim:        rgba(255, 255, 255, 0.55);
-    --layer-1:      rgba(0, 0, 0, 0.045);
-    --layer-2:      rgba(0, 0, 0, 0.075);
-    --layer-3:      rgba(0, 0, 0, 0.11);
-    --hairline:     rgba(0, 0, 0, 0.10);
-    --hairline-str: rgba(0, 0, 0, 0.17);
-    --specular:     rgba(255, 255, 255, 0.65);
-    --text:         rgba(0, 0, 0, 0.90);
-    --text-2:       rgba(0, 0, 0, 0.56);
-    --text-3:       rgba(0, 0, 0, 0.38);
-    --accent:       #c2542f;
-    --accent-fill:  rgba(232, 121, 90, 0.15);
-    --accent-line:  rgba(194, 84, 47, 0.50);
+    /* Glass — light (default). Deliberately near-opaque: a translucent scrim
+       over vibrancy washes text out; this keeps a frosted edge but stays legible. */
+    --scrim:        rgba(249, 249, 251, 0.90);
+    --layer-1:      rgba(0, 0, 0, 0.055);
+    --layer-2:      rgba(0, 0, 0, 0.10);
+    --layer-3:      rgba(0, 0, 0, 0.15);
+    --hairline:     rgba(0, 0, 0, 0.13);
+    --hairline-str: rgba(0, 0, 0, 0.22);
+    --specular:     rgba(255, 255, 255, 0.85);
+    --text:         rgba(0, 0, 0, 0.93);
+    --text-2:       rgba(0, 0, 0, 0.64);
+    --text-3:       rgba(0, 0, 0, 0.46);
+    --accent:       #cf5327;
+    --accent-fill:  rgba(232, 121, 90, 0.18);
+    --accent-line:  rgba(207, 83, 39, 0.55);
     --danger:       #c0342c;
-    --danger-fill:  rgba(192, 52, 44, 0.12);
+    --danger-fill:  rgba(192, 52, 44, 0.14);
 
     --r-panel: 12px; --r-md: 8px; --r-sm: 6px; --r-pill: 999px;
     --ease-out: cubic-bezier(0.2, 0, 0, 1);
@@ -35,21 +36,21 @@
 
 @media (prefers-color-scheme: dark) {
     :root {
-        --scrim:        rgba(24, 24, 27, 0.44);
-        --layer-1:      rgba(255, 255, 255, 0.055);
-        --layer-2:      rgba(255, 255, 255, 0.09);
-        --layer-3:      rgba(255, 255, 255, 0.14);
-        --hairline:     rgba(255, 255, 255, 0.10);
-        --hairline-str: rgba(255, 255, 255, 0.18);
-        --specular:     rgba(255, 255, 255, 0.22);
-        --text:         rgba(255, 255, 255, 0.95);
-        --text-2:       rgba(255, 255, 255, 0.62);
-        --text-3:       rgba(255, 255, 255, 0.40);
-        --accent:       #ff8a63;
-        --accent-fill:  rgba(255, 138, 99, 0.16);
-        --accent-line:  rgba(255, 138, 99, 0.55);
+        --scrim:        rgba(28, 28, 32, 0.86);
+        --layer-1:      rgba(255, 255, 255, 0.07);
+        --layer-2:      rgba(255, 255, 255, 0.12);
+        --layer-3:      rgba(255, 255, 255, 0.17);
+        --hairline:     rgba(255, 255, 255, 0.13);
+        --hairline-str: rgba(255, 255, 255, 0.24);
+        --specular:     rgba(255, 255, 255, 0.30);
+        --text:         rgba(255, 255, 255, 0.96);
+        --text-2:       rgba(255, 255, 255, 0.70);
+        --text-3:       rgba(255, 255, 255, 0.50);
+        --accent:       #ff9166;
+        --accent-fill:  rgba(255, 138, 99, 0.20);
+        --accent-line:  rgba(255, 145, 102, 0.60);
         --danger:       #ff6f6a;
-        --danger-fill:  rgba(255, 111, 106, 0.14);
+        --danger-fill:  rgba(255, 111, 106, 0.16);
     }
 }
 
@@ -89,9 +90,9 @@ body {
 .header {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 9px 12px;
-    border-bottom: 0.5px solid var(--hairline);
+    gap: 9px;
+    padding: 10px 10px 10px 13px;
+    border-bottom: 1px solid var(--hairline);
     flex-shrink: 0;
 }
 .header-icon { color: var(--text-3); flex-shrink: 0; }
@@ -103,18 +104,32 @@ body {
     outline: none;
     color: var(--text);
     font-family: var(--font);
-    font-size: 13.5px;
+    font-size: 14px;
     letter-spacing: -0.01em;
 }
 #search::placeholder { color: var(--text-3); }
-.header-kbd { flex-shrink: 0; }
+.add-btn {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--brand);
+    color: var(--on-brand);
+    border: none;
+    border-radius: var(--r-md);
+    cursor: pointer;
+    transition: filter 120ms;
+}
+.add-btn:hover { filter: brightness(1.08); }
 
 /* ---- Segments ---- */
 .segments {
     display: flex;
     gap: 4px;
-    padding: 6px 10px;
-    border-bottom: 0.5px solid var(--hairline);
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--hairline);
     flex-shrink: 0;
 }
 .seg {
@@ -123,30 +138,53 @@ body {
     gap: 6px;
     background: none;
     border: none;
-    color: var(--text-3);
+    color: var(--text-2);
     font-family: var(--font);
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.01em;
-    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 550;
+    letter-spacing: 0;
+    padding: 5px 11px;
     border-radius: var(--r-sm);
     cursor: pointer;
     transition: color 90ms linear, background 90ms linear;
 }
-.seg:hover { color: var(--text-2); }
-.seg.active { color: var(--text); background: var(--layer-1); }
+.seg:hover { color: var(--text); }
+.seg.active { color: var(--text); background: var(--layer-2); }
 .seg-count {
     font-family: var(--mono);
-    font-size: 9.5px;
+    font-size: 10px;
     color: var(--text-3);
-    background: var(--layer-2);
+    background: var(--layer-1);
     border-radius: var(--r-pill);
     padding: 0 5px;
-    min-width: 14px;
+    min-width: 15px;
     text-align: center;
 }
-.seg.active .seg-count { color: var(--accent); }
+.seg.active .seg-count { color: var(--accent); background: var(--accent-fill); }
 .seg-count:empty { display: none; }
+
+/* ---- Create-from-search row ---- */
+.create-slot:not(:empty) { padding: 6px 6px 0; flex-shrink: 0; }
+.create-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px 11px;
+    border-radius: var(--r-md);
+    border: 1px dashed var(--accent-line);
+    background: var(--accent-fill);
+    cursor: pointer;
+    transition: filter 90ms;
+}
+.create-row:hover { filter: brightness(1.04); }
+.create-plus {
+    width: 20px; height: 20px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--brand); color: var(--on-brand);
+    border-radius: var(--r-sm); font-weight: 700; font-size: 14px; line-height: 1;
+}
+.create-label { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 550; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.create-row .kbd { color: var(--accent); }
 
 /* ---- List ---- */
 .list-wrap { flex: 1; position: relative; overflow: hidden; }
@@ -158,8 +196,8 @@ body {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
+    gap: 11px;
+    padding: 10px 11px;
     border-radius: var(--r-md);
     cursor: pointer;
     transition: background 90ms linear;
@@ -196,8 +234,8 @@ body {
 .row-body { flex: 1; min-width: 0; }
 .row-title {
     font-family: var(--font);
-    font-size: 13px;
-    font-weight: 590;
+    font-size: 13.5px;
+    font-weight: 600;
     color: var(--text);
     white-space: nowrap;
     overflow: hidden;
@@ -206,19 +244,19 @@ body {
 }
 .row-text {
     font-family: var(--mono);
-    font-size: 12px;
+    font-size: 12.5px;
     color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     line-height: 1.45;
 }
-.row-title + .row-text { color: var(--text-2); margin-top: 1px; }
+.row-title + .row-text { color: var(--text-2); font-size: 12px; margin-top: 2px; }
 .row-meta {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-top: 2px;
+    margin-top: 3px;
     font-size: 10.5px;
     color: var(--text-3);
 }
@@ -240,10 +278,8 @@ body {
     min-width: 26px;
     justify-content: flex-end;
 }
-.row-hint { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
 .row-actions { display: none; align-items: center; gap: 2px; }
 .row:hover .row-actions, .row.sel .row-actions { display: flex; }
-.row:hover .row-hint, .row.sel .row-hint { display: none; }
 .act-btn {
     width: 26px;
     height: 26px;

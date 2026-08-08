@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 
 let snippets = [];
 let history = [];
-let scope = 'recent';          // 'recent' | 'snippets'
+let scope = 'snippets';        // 'snippets' | 'history' — snippets is the main view
 let query = '';
 let filtered = [];             // the array the current DOM was built from
 let selectedIndex = 0;
@@ -104,9 +104,8 @@ function chipHTML(chip) {
     const style = chip.color ? ' style="color:' + esc(chip.color) + '"' : '';
     return '<span class="row-chip"' + style + '>' + esc(chip.g) + '</span>';
 }
-function rightSlot(i, btns) {
-    const hint = i < 9 ? '<span class="row-hint">⌘' + (i + 1) + '</span>' : '';
-    return '<div class="row-right">' + hint + '<div class="row-actions">' + btns.join('') + '</div></div>';
+function rightSlot(btns) {
+    return '<div class="row-right"><div class="row-actions">' + btns.join('') + '</div></div>';
 }
 
 function rowHTML(it, i, isSnip) {
@@ -119,7 +118,7 @@ function rowHTML(it, i, isSnip) {
                 '<div class="row-text">' + esc(truncate(it.content, 160)) + '</div>' +
                 (it.tag ? '<div class="row-meta"><span class="row-tag' + (tagOn ? ' on' : '') + '">' + esc(it.tag) + '</span></div>' : '') +
             '</div>' +
-            rightSlot(i, [actBtn('copy', IC_COPY, 'Copy'), actBtn('edit', IC_EDIT, 'Edit'), actBtn('delete', IC_DEL, 'Delete', 'del')]) +
+            rightSlot([actBtn('copy', IC_COPY, 'Copy'), actBtn('edit', IC_EDIT, 'Edit'), actBtn('delete', IC_DEL, 'Delete', 'del')]) +
         '</div>';
     }
     return '<div class="row" data-id="' + esc(it.id) + '" data-i="' + i + '">' +
@@ -128,7 +127,7 @@ function rowHTML(it, i, isSnip) {
             '<div class="row-text">' + esc(truncate(it.text, 160)) + '</div>' +
             '<div class="row-meta"><span>' + ago(it.timestamp) + '</span><span>·</span><span>' + fmtSize(it.text.length) + '</span>' + (it.pinned ? '<span>·</span><span>pinned</span>' : '') + '</div>' +
         '</div>' +
-        rightSlot(i, [
+        rightSlot([
             actBtn('pin', IC_PIN, it.pinned ? 'Unpin' : 'Pin', it.pinned ? 'on' : ''),
             actBtn('snippet', IC_BOOKMARK, 'Save as snippet'),
             actBtn('copy', IC_COPY, 'Copy'),
@@ -143,7 +142,7 @@ function computeFiltered() {
     const q = query.toLowerCase().trim();
     const hCount = history.filter(h => matchesHistory(h, q)).length;
     const sCount = snippets.filter(s => matchesSnippet(s, q)).length;
-    $('countRecent').textContent = hCount || '';
+    $('countHistory').textContent = hCount || '';
     $('countSnippets').textContent = sCount || '';
     filtered = scope === 'snippets'
         ? snippets.filter(s => matchesSnippet(s, q))
@@ -151,8 +150,26 @@ function computeFiltered() {
     if (selectedIndex >= filtered.length) selectedIndex = Math.max(0, filtered.length - 1);
 }
 
+// When searching Snippets, offer to create a snippet from the query as the
+// first thing in the list — "search, and if it's not there, just make it".
+function createRowHTML() {
+    const q = query.trim();
+    if (scope !== 'snippets' || !q) return '';
+    return '<div class="create-row" id="createRow">' +
+        '<span class="create-plus">+</span>' +
+        '<span class="create-label">Create snippet “' + esc(truncate(q, 40)) + '”</span>' +
+        '<span class="kbd">⏎</span>' +
+    '</div>';
+}
+
 function render() {
     computeFiltered();
+    // The create affordance lives in its own slot above the list, so it never
+    // offsets keyboard selection over the real rows.
+    $('createSlot').innerHTML = createRowHTML();
+    const cr = $('createRow');
+    if (cr) cr.onclick = () => openAdd(query.trim());
+
     if (!filtered.length) { $('list').innerHTML = ''; showEmpty(); return; }
     $('empty').classList.add('hidden');
     const isSnip = scope === 'snippets';
@@ -177,8 +194,9 @@ function showEmpty() {
     const empty = $('empty');
     empty.classList.remove('hidden');
     let glyph = '◇', title = 'Nothing copied yet', sub = 'Copy something and it shows up here.', btn = '';
-    if (q) { glyph = '⌕'; title = 'No matches for “' + q + '”'; sub = 'Search covers titles, content, and tags.'; }
-    else if (scope === 'snippets') { glyph = '＋'; title = 'No saved snippets'; sub = 'Save anything you paste often.'; btn = 'New snippet'; }
+    if (scope === 'snippets' && q) { glyph = '＋'; title = 'No snippet matches “' + q + '”'; sub = 'Press ⏎ or the button above to create it.'; }
+    else if (q) { glyph = '⌕'; title = 'No matches for “' + q + '”'; sub = 'Search covers text, titles, and tags.'; }
+    else if (scope === 'snippets') { glyph = '＋'; title = 'No saved snippets yet'; sub = 'Save anything you paste often — the + button, or ⌘N.'; btn = 'New snippet'; }
     else if (settings.enabled === false) { glyph = '⏻'; title = 'Clipboard recording is off'; sub = 'Turn it back on in Settings.'; btn = 'Open Settings'; }
     $('emptyGlyph').textContent = glyph;
     $('emptyTitle').textContent = title;
@@ -225,6 +243,7 @@ $('list').addEventListener('mousemove', e => {
 
 $('segments').addEventListener('click', e => { const seg = e.target.closest('.seg'); if (seg) switchScope(seg.dataset.scope); });
 $('gearBtn').onclick = openSettings;
+$('addBtn').onclick = () => openAdd();
 
 $('search').addEventListener('input', () => { query = $('search').value; selectedIndex = 0; render(); });
 
@@ -232,16 +251,17 @@ function onClipboardUpdate(entry) {
     history = history.filter(h => h.text !== entry.text);
     history.unshift(entry);
     if (history.length > 600) history.length = 600;   // session safety cap
-    if (scope === 'recent') render();
+    if (scope === 'history') render();
 }
 
 // ---- add / edit sheet ----
-function openAdd() {
+function openAdd(prefillTitle) {
     editingId = null;
     $('addTitle').textContent = 'New snippet';
-    $('title').value = ''; $('content').value = ''; $('tag').value = '';
+    $('title').value = prefillTitle || ''; $('content').value = ''; $('tag').value = '';
     $('addSheet').classList.remove('hidden');
-    setTimeout(() => $('title').focus(), 0);
+    // If seeded from the search query, jump straight to the content field.
+    setTimeout(() => (prefillTitle ? $('content') : $('title')).focus(), 0);
 }
 function openEdit(it) {
     editingId = it.id;
@@ -323,7 +343,11 @@ document.addEventListener('keydown', e => {
     const meta = e.metaKey || e.ctrlKey;
     if (e.key === 'ArrowDown') { moveSel(1); e.preventDefault(); }
     else if (e.key === 'ArrowUp') { moveSel(-1); e.preventDefault(); }
-    else if (e.key === 'Enter') { const it = filtered[selectedIndex]; if (it) (e.metaKey ? copyItem(it) : activate(it)); e.preventDefault(); }
+    else if (e.key === 'Enter') {
+        if (scope === 'snippets' && query.trim() && !filtered.length) openAdd(query.trim());
+        else { const it = filtered[selectedIndex]; if (it) (e.metaKey ? copyItem(it) : activate(it)); }
+        e.preventDefault();
+    }
     else if (meta && e.key >= '1' && e.key <= '9') { const it = filtered[+e.key - 1]; if (it) activate(it); e.preventDefault(); }
     else if ((meta && (e.key === 'k' || e.key === 'K')) || e.key === 'Tab') { switchScope(scope === 'recent' ? 'snippets' : 'recent'); e.preventDefault(); }
     else if (meta && (e.key === 'n' || e.key === 'N')) { openAdd(); e.preventDefault(); }
@@ -333,7 +357,7 @@ document.addEventListener('keydown', e => {
 });
 
 function resetUI() {
-    query = ''; $('search').value = ''; scope = 'recent'; setSegActive();
+    query = ''; $('search').value = ''; scope = 'snippets'; setSegActive();
     selectedIndex = 0; closeAdd(); closeSettings();
     render();
     $('search').focus();
